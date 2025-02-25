@@ -190,21 +190,40 @@ function loadSettings() {
 // Configure auto-start based on platform
 function configureAutoStart(enable) {
   const appPath = app.getPath('exe');
-  const appName = 'SimpleBrowser';
+  const appName = 'Jumpstart';
   
   switch (process.platform) {
     case 'win32':
-      // Windows: Use registry
-      const Registry = require('winreg');
-      const startupKey = new Registry({
-        hive: Registry.HKCU,
-        key: '\\Software\\Microsoft\\Windows\\CurrentVersion\\Run'
-      });
+      // Windows: Create shortcut in startup folder
+      const { execSync } = require('child_process');
+      const startupFolderPath = path.join(process.env.APPDATA, 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Startup');
+      const shortcutPath = path.join(startupFolderPath, `${appName}.lnk`);
       
       if (enable) {
-        startupKey.set(appName, Registry.REG_SZ, `"${appPath}"`);
+        // Create Windows shortcut using PowerShell
+        try {
+          const powershellCommand = `
+            $WshShell = New-Object -ComObject WScript.Shell
+            $Shortcut = $WshShell.CreateShortcut("${shortcutPath.replace(/\\/g, '\\\\')}")
+            $Shortcut.TargetPath = "${appPath.replace(/\\/g, '\\\\')}"
+            $Shortcut.Save()
+          `;
+          
+          execSync(`powershell -command "${powershellCommand}"`, { windowsHide: true });
+          console.log(`Created startup shortcut at: ${shortcutPath}`);
+        } catch (error) {
+          console.error('Failed to create startup shortcut:', error);
+        }
       } else {
-        startupKey.remove(appName);
+        // Remove shortcut if it exists
+        if (fs.existsSync(shortcutPath)) {
+          try {
+            fs.unlinkSync(shortcutPath);
+            console.log(`Removed startup shortcut: ${shortcutPath}`);
+          } catch (error) {
+            console.error('Failed to remove startup shortcut:', error);
+          }
+        }
       }
       break;
       
