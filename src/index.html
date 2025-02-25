@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Customizable Browser - Settings</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="container">
+    <h1>Browser Settings</h1>
+    <form id="settings-form">
+      <div class="form-group">
+        <label for="url">URL to Open:</label>
+        <input type="url" id="url" placeholder="https://example.com" value="https://google.com" required>
+        <small class="input-help">Enter the full URL including http:// or https://</small>
+      </div>
+      
+      <div class="form-group">
+        <label for="kiosk">
+          <input type="checkbox" id="kiosk"> 
+          Kiosk Mode (fullscreen without window controls)
+        </label>
+      </div>
+      
+      <div class="form-group">
+        <label for="fullscreen">
+          <input type="checkbox" id="fullscreen"> 
+          Fullscreen Mode (disabled when kiosk mode is on)
+        </label>
+      </div>
+      
+      <div class="form-group">
+        <label for="startup">
+          <input type="checkbox" id="startup"> 
+          Start with System
+        </label>
+      </div>
+      
+      <div class="form-group">
+        <p class="info-text">
+          <strong>Note:</strong> Camera and microphone permissions will be automatically granted.
+          To exit kiosk mode, press Ctrl+Shift+Q or use the exit button.
+        </p>
+      </div>
+      
+      <button type="submit" class="btn-primary">Launch Browser</button>
+    </form>
+  </div>
+
+  <script>
+    // Load saved settings when the page loads
+    window.addEventListener('DOMContentLoaded', () => {
+      // Request saved settings from main process
+      window.electronAPI.loadSettings((settings) => {
+        if (settings) {
+          // Populate form with saved settings
+          document.getElementById('url').value = settings.url || 'https://google.com';
+          document.getElementById('kiosk').checked = settings.kiosk || false;
+          document.getElementById('fullscreen').checked = settings.fullscreen || false;
+          document.getElementById('startup').checked = settings.startup || false;
+          
+          // Update UI based on loaded settings
+          if (settings.kiosk) {
+            document.getElementById('fullscreen').disabled = true;
+          }
+        }
+      });
+    });
+    
+    // Handle form submission
+    document.getElementById('settings-form').addEventListener('submit', (e) => {
+      e.preventDefault();
+      
+      const urlInput = document.getElementById('url');
+      let url = urlInput.value.trim();
+      
+      // Add https:// prefix if missing
+      if (!/^https?:\/\//i.test(url)) {
+        url = 'https://' + url;
+        urlInput.value = url;
+      }
+      
+      const settings = {
+        url: url,
+        kiosk: document.getElementById('kiosk').checked,
+        fullscreen: document.getElementById('fullscreen').checked,
+        startup: document.getElementById('startup').checked
+      };
+      
+      window.electronAPI.saveSettings(settings);
+    });
+    
+    // Disable fullscreen option when kiosk is checked
+    document.getElementById('kiosk').addEventListener('change', (e) => {
+      const fullscreenCheckbox = document.getElementById('fullscreen');
+      if (e.target.checked) {
+        fullscreenCheckbox.checked = false;
+        fullscreenCheckbox.disabled = true;
+      } else {
+        fullscreenCheckbox.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>
