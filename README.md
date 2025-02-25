@@ -1,6 +1,6 @@
 # Jumpstart
 
-A simple cross-platform Electron wrapper allows you to open any URL in a dedicated window with options for kiosk mode, fullscreen mode, and system startup, which is useful for setting up creative coding projects.
+A simple cross-platform Electron wrapper lets you open any URL in a dedicated window with options for kiosk mode, full screen mode, and system startup, useful for setting up creative coding projects.
 
 ## Features
 
