@@ -31,23 +31,22 @@ A simple cross-platform Electron wrapper lets you open any URL in a dedicated wi
 
 ## Installation
 
-1. Make sure you have [Node.js](https://nodejs.org/) installed (version 14 or higher recommended)
+1. Go to the [Releases](https://github.com/alanvww/jumpstart-electron/releases/latest) page of this repository
 
-2. Clone this repository or download the source code
+2. Download the appropriate version for your operating system:
 
-3. Install dependencies:
+   - **Windows**: Download portable version (.exe)
+   - **macOS**: Download the DMG file (.dmg)
+   - **Linux**: Select the AppImage (.AppImage), Debian package (.deb), or RPM package (.rpm) - coming soon!
 
-   ```
-   npm install
-   ```
+3. Install the application:
+   - **Windows**: Extract the portable version and run the executable
+   - **macOS**: Open the DMG file and drag the application to your Applications folder
+   - **Linux**: Make the AppImage executable (`chmod +x *.AppImage`) or install the deb/rpm package using your package manager
 
 ## Usage
 
-1. Start the application:
-
-   ```
-   npm start
-   ```
+1. Launch the Jumpstart application from your applications menu or desktop
 
 2. On the settings page:
 
@@ -143,6 +142,37 @@ The built applications will be available in the `dist` directory:
 
 You can customize the build configuration in the `build` section of `package.json`. See the [electron-builder documentation](https://www.electron.build/) for more options.
 
+## Development
+
+If you want to contribute to Jumpstart or build it from source, follow these steps:
+
+1. Make sure you have [Node.js](https://nodejs.org/) installed (version 14 or higher recommended)
+
+2. Clone this repository:
+
+   ```
+   git clone https://github.com/alanvww/jumpstart-electron.git
+   cd jumpstart-electron
+   ```
+
+3. Install dependencies:
+
+   ```
+   npm install
+   ```
+
+4. Start the application in development mode:
+
+   ```
+   npm start
+   ```
+
+5. Make your changes and test them
+
+6. Build the application using one of the build commands mentioned in the "Building for Production" section
+
 ## License
 
-MIT
+MIT License
+
+Copyright (c) 2025 Alan Ren
