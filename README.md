@@ -1,4 +1,14 @@
-# Jumpstart
+<p align="center">
+  <img src="./icons/icon.png" alt="Jumpstart Logo" width="128" height="128">
+</p>
+
+<h1 align="center">Jumpstart</h1>
+
+<p align="center">
+  <a href="https://github.com/username/jumpstart-electron/releases/latest">
+    <img src="https://img.shields.io/github/v/release/alanvww/jumpstart-electron?style=flat-square" alt="Latest Release">
+  </a>
+</p>
 
 A simple cross-platform Electron wrapper lets you open any URL in a dedicated window with options for kiosk mode, full screen mode, and system startup, useful for setting up creative coding projects.
 
@@ -26,6 +36,7 @@ A simple cross-platform Electron wrapper lets you open any URL in a dedicated wi
 2. Clone this repository or download the source code
 
 3. Install dependencies:
+
    ```
    npm install
    ```
