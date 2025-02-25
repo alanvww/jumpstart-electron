@@ -5,7 +5,7 @@
 <h1 align="center">Jumpstart</h1>
 
 <p align="center">
-  <a href="https://github.com/username/jumpstart-electron/releases/latest">
+  <a href="https://github.com/alanvww/jumpstart-electron/releases/latest">
     <img src="https://img.shields.io/github/v/release/alanvww/jumpstart-electron?style=flat-square" alt="Latest Release">
   </a>
 </p>
