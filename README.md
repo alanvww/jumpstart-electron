@@ -60,7 +60,7 @@ A simple cross-platform Electron wrapper lets you open any URL in a dedicated wi
 
 4. To exit kiosk mode and return to settings:
    - Click the "Exit" button in the top-right corner
-   - Press the keyboard shortcut Ctrl+Shift+Q
+   - Press the keyboard shortcut `Ctrl+Shift+Q`(Windows), `Cmd+Shift+Q`(Mac OS)
 
 ## Technical Details
 
