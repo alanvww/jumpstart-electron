@@ -20,14 +20,18 @@ A simple cross-platform Electron wrapper lets you open any URL in a dedicated wi
   - Toggle kiosk mode (fullscreen without window controls)
   - Toggle regular fullscreen mode (disabled when kiosk mode is on)
   - Choose whether the app starts automatically with the system
+  - Set auto-refresh interval in minutes
+  - Enable automatic refresh when network reconnects
 
 - **Browser Page**: Display the specified URL
 
   - Automatic camera and microphone permissions
   - Exit button to return to settings
-  - Keyboard shortcut (Ctrl+Shift+Q) to exit kiosk mode
+  - Keyboard shortcut `Ctrl+Shift+Q` or `Cmd+Shift+Q` to exit kiosk mode
+  - Automatic page refresh on network reconnection
+  - Timed auto-refresh based on user settings
 
-- **Cross-Platform Support**: Works on Windows, macOS, and Linux
+- **Cross-Platform Support**: Works on Windows, macOS, and Linux (including Raspberry Pi)
 
 ## Installation
 
@@ -69,6 +73,7 @@ A simple cross-platform Electron wrapper lets you open any URL in a dedicated wi
 - Implements secure practices with contextIsolation and preload scripts
 - Uses Electron's IPC for communication between main and renderer processes
 - Automatically grants camera and microphone permissions for the browser page
+- Implements reliable network connectivity monitoring
 
 ## Project Structure
 

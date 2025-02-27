@@ -38,6 +38,22 @@
       </div>
       
       <div class="form-group">
+        <label for="refreshMinutes">Auto-refresh Page Every:</label>
+        <div class="refresh-controls">
+          <input type="number" id="refreshMinutes" min="0" step="1" value="0" class="refresh-input">
+          <span class="refresh-label">minutes</span>
+          <small class="input-help">Set to 0 to disable auto-refresh</small>
+        </div>
+      </div>
+      
+      <div class="form-group">
+        <div class="info-box">
+          <input type="checkbox" id="networkRefresh" checked> 
+          <label for="networkRefresh">Auto-refresh page when network reconnects</label>
+        </div>
+      </div>
+      
+      <div class="form-group">
         <p class="info-text">
           <strong>Note:</strong> Camera and microphone permissions will be automatically granted.
           To exit kiosk mode, press Ctrl+Shift+Q or use the exit button.
@@ -59,6 +75,7 @@
           document.getElementById('kiosk').checked = settings.kiosk || false;
           document.getElementById('fullscreen').checked = settings.fullscreen || false;
           document.getElementById('startup').checked = settings.startup || false;
+          document.getElementById('refreshMinutes').value = settings.refreshMinutes || 0;
           
           // Update UI based on loaded settings
           if (settings.kiosk) {
@@ -81,11 +98,19 @@
         urlInput.value = url;
       }
       
+      // Get refresh minutes and ensure it's a valid number
+      let refreshMinutes = parseInt(document.getElementById('refreshMinutes').value, 10);
+      if (isNaN(refreshMinutes) || refreshMinutes < 0) {
+        refreshMinutes = 0; // Default to disabled if invalid
+      }
+      
       const settings = {
         url: url,
         kiosk: document.getElementById('kiosk').checked,
         fullscreen: document.getElementById('fullscreen').checked,
-        startup: document.getElementById('startup').checked
+        startup: document.getElementById('startup').checked,
+        refreshMinutes: refreshMinutes,
+        networkRefresh: document.getElementById('networkRefresh').checked
       };
       
       window.electronAPI.saveSettings(settings);
