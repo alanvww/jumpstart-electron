@@ -3,6 +3,7 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 const { exec } = require('child_process');
+const net = require('net');
 
 // Ensure only one instance of the app runs
 console.log('Requesting single instance lock...');
@@ -102,7 +103,20 @@ function createBrowserWindow(url, isKiosk, isFullscreen, refreshMinutes, network
   // Load the URL directly
   browserWindow.loadURL(url).catch(err => {
     console.error('Failed to load URL:', err);
+    
+    // Store the original URL in a session variable so we can access it from error.html
+    if (browserWindow && !browserWindow.isDestroyed()) {
+      browserWindow.webContents.session.setStorageItem('failedUrl', url);
+    }
+    
     browserWindow.loadFile(path.join(__dirname, 'error.html'));
+    
+    // Even when loading error.html, continue to monitor the original URL
+    // This way we can reload when it becomes available
+    if (networkRefresh) {
+      console.log('Setting up network monitoring for unavailable URL:', url);
+      monitorNetworkStatus(browserWindow, url);
+    }
   });
 
   // Set up auto-refresh timer if enabled
@@ -137,6 +151,7 @@ function monitorNetworkStatus(window, targetUrl) {
 
   // Track online status
   let isCurrentlyOnline = true; // Assume online initially
+  let isLocalPortAvailable = true; // Track localhost port availability
 
   // Parse the URL to get the protocol, host, and port
   let parsedUrl;
@@ -147,8 +162,55 @@ function monitorNetworkStatus(window, targetUrl) {
     parsedUrl = new URL('https://www.google.com'); // Fallback to Google if URL is invalid
   }
 
-  // Use the user's URL to test connectivity
-  const testConnection = () => {
+  // Check if the URL is pointing to localhost
+  const isLocalhostUrl = parsedUrl.hostname === 'localhost' || 
+                        parsedUrl.hostname === '127.0.0.1';
+  
+  // Extract port from URL
+  const port = parsedUrl.port ? parseInt(parsedUrl.port, 10) : 
+              (parsedUrl.protocol === 'https:' ? 443 : 80);
+
+  console.log(`URL analysis: ${parsedUrl.hostname}:${port} (Localhost URL: ${isLocalhostUrl})`);
+
+  // Function to check if a localhost port is available
+  const checkLocalPort = (port) => {
+    return new Promise((resolve) => {
+      const socket = new net.Socket();
+      
+      // Set a timeout for the connection attempt
+      const timeout = setTimeout(() => {
+        socket.destroy();
+        console.log(`Port ${port} connection attempt timed out`);
+        resolve(false);
+      }, 1000);
+      
+      // Attempt to connect to the port
+      socket.connect(port, '127.0.0.1', () => {
+        clearTimeout(timeout);
+        socket.destroy();
+        console.log(`Successfully connected to port ${port}`);
+        resolve(true);
+      });
+      
+      // Handle connection errors
+      socket.on('error', (err) => {
+        clearTimeout(timeout);
+        socket.destroy();
+        console.log(`Port ${port} connection error: ${err.message}`);
+        resolve(false);
+      });
+    });
+  };
+
+  // Use the appropriate method to test connectivity based on URL type
+  const testConnection = async () => {
+    // For localhost URLs, check port availability using TCP
+    if (isLocalhostUrl) {
+      console.log(`Testing localhost port ${port} availability...`);
+      return await checkLocalPort(port);
+    }
+    
+    // For regular URLs, use HTTP/HTTPS request
     return new Promise((resolve) => {
       const protocol = parsedUrl.protocol === 'https:' ? require('https') : require('http');
 
@@ -191,28 +253,54 @@ function monitorNetworkStatus(window, targetUrl) {
   const networkCheckInterval = setInterval(async () => {
     try {
       const wasOnline = isCurrentlyOnline;
+      const wasPortAvailable = isLocalPortAvailable;
+      
+      // Get current connection status
       isCurrentlyOnline = await testConnection();
+      
+      // Update port status only if it's a localhost URL
+      if (isLocalhostUrl) {
+        isLocalPortAvailable = isCurrentlyOnline;
+        console.log(`Localhost port ${port} status check - Previous: ${wasPortAvailable ? 'available' : 'unavailable'}, Current: ${isLocalPortAvailable ? 'available' : 'unavailable'}`);
+        
+        // Detect port becoming available
+        if (isLocalPortAvailable && !wasPortAvailable) {
+          console.log(`Localhost port ${port} is now available! Scheduling page refresh...`);
+          
+          // Wait a moment for the service to fully initialize before refreshing
+          setTimeout(() => {
+            if (window && !window.isDestroyed()) {
+              console.log(`Executing page refresh after localhost port ${port} became available`);
+              window.reload();
+            }
+          }, 2000);
+        }
+      } else {
+        // Regular network status handling for non-localhost URLs
+        console.log(`Network status check - Previous: ${wasOnline ? 'online' : 'offline'}, Current: ${isCurrentlyOnline ? 'online' : 'offline'}`);
 
-      console.log(`Network status check - Previous: ${wasOnline ? 'online' : 'offline'}, Current: ${isCurrentlyOnline ? 'online' : 'offline'}`);
+        // Detect reconnection (went from offline to online)
+        if (isCurrentlyOnline && !wasOnline) {
+          console.log('Network reconnected! Scheduling page refresh...');
 
-      // Detect reconnection (went from offline to online)
-      if (isCurrentlyOnline && !wasOnline) {
-        console.log('Network reconnected! Scheduling page refresh...');
-
-        // Wait a moment for the connection to stabilize before refreshing
-        setTimeout(() => {
-          if (window && !window.isDestroyed()) {
-            console.log('Executing page refresh after network reconnection');
-            window.reload();
-          }
-        }, 3000);
+          // Wait a moment for the connection to stabilize before refreshing
+          setTimeout(() => {
+            if (window && !window.isDestroyed()) {
+              console.log('Executing page refresh after network reconnection');
+              window.reload();
+            }
+          }, 3000);
+        }
       }
     } catch (error) {
       console.error('Error checking network status:', error);
       // If we hit an exception, assume we're offline
       isCurrentlyOnline = false;
+      if (isLocalhostUrl) {
+        isLocalPortAvailable = false;
+      }
     }
-  }, 15000);
+  }, 5000); // Check more frequently (every 5 seconds) to better detect localhost ports becoming available
 
   // Perform an immediate check
   testConnection().then(online => {
@@ -549,6 +637,44 @@ ipcMain.on('exit-kiosk', () => {
 ipcMain.on('get-settings', (event) => {
   const settings = loadSettings();
   event.sender.send('settings-loaded', settings);
+});
+
+// Handle get-failed-url request from renderer (used in error.html)
+ipcMain.handle('get-failed-url', async (event) => {
+  if (!browserWindow || browserWindow.isDestroyed()) {
+    return null;
+  }
+  
+  try {
+    // Retrieve the failed URL from session storage
+    const failedUrl = await browserWindow.webContents.session.getStorageItem('failedUrl');
+    return failedUrl || null;
+  } catch (error) {
+    console.error('Error getting failed URL:', error);
+    return null;
+  }
+});
+
+// Handle retry-url request from renderer (used in error.html)
+ipcMain.on('retry-url', (event) => {
+  if (!browserWindow || browserWindow.isDestroyed()) {
+    return;
+  }
+  
+  // Attempt to retrieve the failed URL
+  browserWindow.webContents.session.getStorageItem('failedUrl')
+    .then(failedUrl => {
+      if (failedUrl) {
+        console.log('Retrying connection to URL:', failedUrl);
+        browserWindow.loadURL(failedUrl).catch(err => {
+          console.error('Failed to load URL again:', err);
+          // No need to reload error.html as we're already there
+        });
+      }
+    })
+    .catch(error => {
+      console.error('Error retrieving failed URL for retry:', error);
+    });
 });
 
 // Enhanced camera/microphone permissions handler
