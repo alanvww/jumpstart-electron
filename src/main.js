@@ -4,130 +4,67 @@ const fs = require('fs');
 const os = require('os');
 const { exec } = require('child_process');
 
-// Ensure only one instance of the app runs
-console.log('Requesting single instance lock...');
-const gotTheLock = app.requestSingleInstanceLock();
+// Function to enable camera access on Linux
+function enableCameraAccess(browserWindow) {
+  // Check if we're on Linux
+  if (process.platform === 'linux') {
+    console.log('Setting up additional camera access for Linux');
 
-if (!gotTheLock) {
-  console.log('Another instance is already running. Quitting...');
-  app.quit();
-  return; // Important: stop execution here
-} else {
-  console.log('This is the first instance of the app');
-  // This is the first instance - continue with app initialization
-  app.on('second-instance', (event, commandLine, workingDirectory) => {
-    console.log('Second instance detected, focusing existing window');
-    // Someone tried to run a second instance, focus our window instead
-    if (mainWindow) {
-      console.log('Focusing main window');
-      if (mainWindow.isMinimized()) mainWindow.restore();
-      mainWindow.focus();
-    } else if (browserWindow) {
-      console.log('Focusing browser window');
-      if (browserWindow.isMinimized()) browserWindow.restore();
-      browserWindow.focus();
-    }
-  });
-}
-
-let mainWindow, browserWindow;
-let refreshTimer = null;
-
-function createMainWindow() {
-  mainWindow = new BrowserWindow({
-    width: 800,
-    height: 600,
-    icon: path.join(__dirname, '..', 'icons', 'icon.png'),
-    webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
-      nodeIntegration: false,
-      contextIsolation: true
-    }
-  });
-  mainWindow.loadFile(path.join(__dirname, 'index.html'));
-}
-
-function createBrowserWindow(url, isKiosk, isFullscreen, refreshMinutes, networkRefresh) {
-  // Create browser window with initial size
-  browserWindow = new BrowserWindow({
-    width: 1024,
-    height: 768,
-    show: false, // Don't show until we're ready
-    icon: path.join(__dirname, '..', 'icons', 'icon.png'),
-    webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
-      nodeIntegration: false,
-      contextIsolation: true,
-      webSecurity: true
-    }
-  });
-
-  // Set up event to show settings page when browser window is closed
-  browserWindow.on('closed', () => {
-    browserWindow = null;
-    // Clear any existing refresh timer when browser is closed
-    if (refreshTimer) {
-      clearInterval(refreshTimer);
-      refreshTimer = null;
-    }
-    createMainWindow(); // Show settings page when browser is closed
-  });
-
-  // Maximize window first before setting kiosk or fullscreen mode
-  browserWindow.maximize();
-
-  // Apply kiosk or fullscreen mode after window is ready
-  browserWindow.once('ready-to-show', () => {
-    if (isKiosk) {
-      browserWindow.setKiosk(true);
-    } else if (isFullscreen) {
-      browserWindow.setFullScreen(true);
-    }
-    browserWindow.show();
-  });
-
-  // Register global shortcut for exiting kiosk mode
-  const { globalShortcut } = require('electron');
-  globalShortcut.register('CommandOrControl+Shift+Q', () => {
-    if (browserWindow && !browserWindow.isDestroyed()) {
-      browserWindow.close();
-    }
-  });
-
-  // Clean up shortcut when window is closed
-  browserWindow.on('closed', () => {
-    globalShortcut.unregisterAll();
-  });
-
-  // Load the URL directly
-  browserWindow.loadURL(url).catch(err => {
-    console.error('Failed to load URL:', err);
-    browserWindow.loadFile(path.join(__dirname, 'error.html'));
-  });
-
-  // Set up auto-refresh timer if enabled
-  if (refreshMinutes && refreshMinutes > 0) {
-    console.log(`Setting up auto-refresh every ${refreshMinutes} minutes`);
-    // Convert minutes to milliseconds
-    const refreshInterval = refreshMinutes * 60 * 1000;
-    refreshTimer = setInterval(() => {
-      if (browserWindow && !browserWindow.isDestroyed()) {
-        console.log('Auto-refreshing page...');
-        browserWindow.reload();
-      } else {
-        clearInterval(refreshTimer);
-        refreshTimer = null;
+    // Add required preferences to the session
+    browserWindow.webContents.session.webRequest.onHeadersReceived(
+      { urls: ['*://*/*'] },
+      (details, callback) => {
+        callback({
+          responseHeaders: {
+            ...details.responseHeaders,
+            'Feature-Policy': ['camera *', 'microphone *'],
+            'Permissions-Policy': ['camera=*, microphone=*']
+          }
+        });
       }
-    }, refreshInterval);
-  }
+    );
 
-  // Set up network status monitoring if enabled
-  console.log('Network refresh setting:', networkRefresh);
-  if (networkRefresh) {
-    console.log('Enabling network status monitoring');
-    monitorNetworkStatus(browserWindow, url);
-  } else {
-    console.log('Network status monitoring is disabled');
+    // When page has loaded, inject a script to ensure camera API is ready
+    browserWindow.webContents.on('did-finish-load', () => {
+      browserWindow.webContents.executeJavaScript(`
+        // Check if mediaDevices exists
+        if (!navigator.mediaDevices) {
+          console.log('mediaDevices not found, creating...');
+          navigator.mediaDevices = {};
+        }
+
+        // Check if getUserMedia exists
+        if (!navigator.mediaDevices.getUserMedia) {
+          console.log('getUserMedia not found, creating...');
+          navigator.mediaDevices.getUserMedia = function(constraints) {
+            // First try the new style
+            var getUserMedia = navigator.webkitGetUserMedia || navigator.mozGetUserMedia;
+            
+            if (!getUserMedia) {
+              console.error('getUserMedia is not available in this browser');
+              return Promise.reject(new Error('getUserMedia is not implemented in this browser'));
+            }
+
+            // Wrap the old API in a Promise
+            return new Promise(function(resolve, reject) {
+              getUserMedia.call(navigator, constraints, resolve, reject);
+            });
+          };
+        }
+
+        // Report camera status
+        console.log('Camera API status: navigator.mediaDevices =', 
+                    navigator.mediaDevices ? 'available' : 'not available');
+        console.log('getUserMedia =', 
+                    navigator.mediaDevices.getUserMedia ? 'available' : 'not available');
+      `)
+        .then(() => {
+          console.log('Camera access script injected successfully');
+        })
+        .catch(err => {
+          console.error('Failed to inject camera access script:', err);
+        });
+    });
   }
 }
 
@@ -225,6 +162,165 @@ function monitorNetworkStatus(window, targetUrl) {
     console.log('Cleaning up network monitoring');
     clearInterval(networkCheckInterval);
   });
+}
+
+// Ensure only one instance of the app runs
+console.log('Requesting single instance lock...');
+const gotTheLock = app.requestSingleInstanceLock();
+
+if (!gotTheLock) {
+  console.log('Another instance is already running. Quitting...');
+  app.quit();
+  return; // Important: stop execution here
+} else {
+  console.log('This is the first instance of the app');
+  // This is the first instance - continue with app initialization
+  app.on('second-instance', (event, commandLine, workingDirectory) => {
+    console.log('Second instance detected, focusing existing window');
+    // Someone tried to run a second instance, focus our window instead
+    if (mainWindow) {
+      console.log('Focusing main window');
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.focus();
+    } else if (browserWindow) {
+      console.log('Focusing browser window');
+      if (browserWindow.isMinimized()) browserWindow.restore();
+      browserWindow.focus();
+    }
+  });
+}
+
+let mainWindow, browserWindow;
+let refreshTimer = null;
+
+function createMainWindow() {
+  mainWindow = new BrowserWindow({
+    width: 800,
+    height: 600,
+    icon: path.join(__dirname, '..', 'icons', 'icon.png'),
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      nodeIntegration: false,
+      contextIsolation: true
+    }
+  });
+  mainWindow.loadFile(path.join(__dirname, 'index.html'));
+}
+
+function createBrowserWindow(url, isKiosk, isFullscreen, refreshMinutes, networkRefresh) {
+  // Create browser window with initial size
+  browserWindow = new BrowserWindow({
+    width: 1024,
+    height: 768,
+    show: false, // Don't show until we're ready
+    icon: path.join(__dirname, '..', 'icons', 'icon.png'),
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      nodeIntegration: false,
+      contextIsolation: true,
+      webSecurity: true
+    }
+  });
+
+  // Explicitly enable camera access for Linux
+  if (process.platform === 'linux') {
+    // Set specific webPreferences for media access
+    browserWindow.webContents.session.setPermissionRequestHandler((webContents, permission, callback) => {
+      if (permission === 'media' || permission === 'camera' || permission === 'microphone') {
+        console.log(`Granting ${permission} permission on Linux`);
+        callback(true);
+      } else {
+        callback(false);
+      }
+    });
+
+    // Enable camera specific features
+    enableCameraAccess(browserWindow);
+  }
+
+  // Set up event to show settings page when browser window is closed
+  browserWindow.on('closed', () => {
+    browserWindow = null;
+    // Clear any existing refresh timer when browser is closed
+    if (refreshTimer) {
+      clearInterval(refreshTimer);
+      refreshTimer = null;
+    }
+    createMainWindow(); // Show settings page when browser is closed
+  });
+
+  // Maximize window first before setting kiosk or fullscreen mode
+  browserWindow.maximize();
+
+  // Apply kiosk or fullscreen mode after window is ready
+  browserWindow.once('ready-to-show', () => {
+    if (isKiosk) {
+      browserWindow.setKiosk(true);
+    } else if (isFullscreen) {
+      browserWindow.setFullScreen(true);
+    }
+    browserWindow.show();
+  });
+
+  // Register global shortcut for exiting kiosk mode
+  const { globalShortcut } = require('electron');
+  globalShortcut.register('CommandOrControl+Shift+Q', () => {
+    if (browserWindow && !browserWindow.isDestroyed()) {
+      browserWindow.close();
+    }
+  });
+
+  // Clean up shortcut when window is closed
+  browserWindow.on('closed', () => {
+    globalShortcut.unregisterAll();
+  });
+
+  // Load the URL directly
+  browserWindow.loadURL(url).catch(err => {
+    console.error('Failed to load URL:', err);
+    browserWindow.loadFile(path.join(__dirname, 'error.html'));
+  });
+
+  // Additional camera access setup for Linux after page loads
+  if (process.platform === 'linux') {
+    browserWindow.webContents.on('did-finish-load', () => {
+      console.log('Page loaded, ensuring camera access on Linux');
+      // This forces camera permissions to be granted again
+      browserWindow.webContents.session.setPermissionRequestHandler((webContents, permission, callback) => {
+        if (permission === 'media' || permission === 'camera' || permission === 'microphone') {
+          console.log(`Re-granting ${permission} permission after page load`);
+          callback(true);
+        } else {
+          callback(false);
+        }
+      });
+    });
+  }
+
+  // Set up auto-refresh timer if enabled
+  if (refreshMinutes && refreshMinutes > 0) {
+    console.log(`Setting up auto-refresh every ${refreshMinutes} minutes`);
+    // Convert minutes to milliseconds
+    const refreshInterval = refreshMinutes * 60 * 1000;
+    refreshTimer = setInterval(() => {
+      if (browserWindow && !browserWindow.isDestroyed()) {
+        console.log('Auto-refreshing page...');
+        browserWindow.reload();
+      } else {
+        clearInterval(refreshTimer);
+        refreshTimer = null;
+      }
+    }, refreshInterval);
+  }
+
+  // Set up network status monitoring if enabled
+  console.log('Network refresh setting:', networkRefresh);
+  if (networkRefresh) {
+    console.log('Enabling network status monitoring');
+    monitorNetworkStatus(browserWindow, url);
+  } else {
+    console.log('Network status monitoring is disabled');
+  }
 }
 
 // Setup Linux-specific camera permissions for Raspberry Pi
@@ -551,40 +647,17 @@ ipcMain.on('get-settings', (event) => {
   event.sender.send('settings-loaded', settings);
 });
 
-// Enhanced camera/microphone permissions handler
+// In the case we don't set permission handlers elsewhere, set a global one
 app.on('web-contents-created', (event, contents) => {
-  contents.session.setPermissionRequestHandler((webContents, permission, callback) => {
-    if (permission === 'media' || permission === 'camera' || permission === 'microphone') {
-      console.log(`Allowing ${permission} permission`);
-      callback(true);
-    } else {
-      callback(false);
-    }
-  });
-
-  // For Linux/Raspberry Pi, we need additional handling
-  if (process.platform === 'linux') {
-    contents.on('did-start-navigation', () => {
-      // Set user agent to a desktop browser to improve compatibility
-      contents.setUserAgent(contents.getUserAgent() + ' JumpstartApp');
-
-      // Inject script to handle camera permissions more aggressively
-      contents.executeJavaScript(`
-        // Override getUserMedia to auto-accept camera permissions
-        navigator.mediaDevices.getUserMedia = (async (original) => {
-          return async (constraints) => {
-            try {
-              console.log('Requesting media with constraints:', constraints);
-              return await original.call(navigator.mediaDevices, constraints);
-            } catch (err) {
-              console.error('Media access error:', err);
-              throw err;
-            }
-          };
-        })(navigator.mediaDevices.getUserMedia);
-        
-        console.log('Camera permission handling enhanced');
-      `);
+  // For non-Linux platforms
+  if (process.platform !== 'linux') {
+    contents.session.setPermissionRequestHandler((webContents, permission, callback) => {
+      if (permission === 'media' || permission === 'camera' || permission === 'microphone') {
+        console.log(`Allowing ${permission} permission on non-Linux platform`);
+        callback(true);
+      } else {
+        callback(false);
+      }
     });
   }
 });
