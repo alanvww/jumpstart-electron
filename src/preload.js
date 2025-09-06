@@ -23,5 +23,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
   onNetworkStatusChange: (callback) => {
     window.addEventListener('online', () => callback(true));
     window.addEventListener('offline', () => callback(false));
-  }
+  },
+  
+  // Get the URL that failed to load (for error.html)
+  getFailedUrl: () => ipcRenderer.invoke('get-failed-url'),
+  
+  // Try loading the URL again
+  retryUrl: () => ipcRenderer.send('retry-url')
 });

@@ -3,6 +3,7 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 const { exec } = require('child_process');
+const net = require('net');
 
 // Function to enable camera access on Linux
 function enableCameraAccess(browserWindow) {
@@ -66,102 +67,6 @@ function enableCameraAccess(browserWindow) {
         });
     });
   }
-}
-
-// Function to monitor network connectivity with the target URL
-function monitorNetworkStatus(window, targetUrl) {
-  console.log(`Starting network status monitoring for: ${targetUrl}`);
-
-  // Track online status
-  let isCurrentlyOnline = true; // Assume online initially
-
-  // Parse the URL to get the protocol, host, and port
-  let parsedUrl;
-  try {
-    parsedUrl = new URL(targetUrl);
-  } catch (error) {
-    console.error(`Invalid URL for network monitoring: ${targetUrl}`);
-    parsedUrl = new URL('https://www.google.com'); // Fallback to Google if URL is invalid
-  }
-
-  // Use the user's URL to test connectivity
-  const testConnection = () => {
-    return new Promise((resolve) => {
-      const protocol = parsedUrl.protocol === 'https:' ? require('https') : require('http');
-
-      const options = {
-        hostname: parsedUrl.hostname,
-        path: parsedUrl.pathname || '/',
-        method: 'HEAD', // Use HEAD request for efficiency - we only care about connection, not content
-        timeout: 5000
-      };
-
-      console.log(`Testing connection to: ${parsedUrl.hostname}...`);
-
-      const request = protocol.request(options, (response) => {
-        // Any response means we're online (even if it's a redirect or error code)
-        console.log(`Connection test to ${parsedUrl.hostname}: HTTP ${response.statusCode}`);
-        response.destroy(); // Properly close the connection
-        resolve(true);
-      });
-
-      // Set a timeout to avoid hanging
-      request.setTimeout(5000, () => {
-        console.log(`Connection test to ${parsedUrl.hostname} timed out`);
-        request.destroy();
-        resolve(false);
-      });
-
-      // Handle connection errors
-      request.on('error', (err) => {
-        console.log(`Connection test to ${parsedUrl.hostname} error: ${err.message}`);
-        request.destroy();
-        resolve(false);
-      });
-
-      // End the request
-      request.end();
-    });
-  };
-
-  // Check network status every 15 seconds
-  const networkCheckInterval = setInterval(async () => {
-    try {
-      const wasOnline = isCurrentlyOnline;
-      isCurrentlyOnline = await testConnection();
-
-      console.log(`Network status check - Previous: ${wasOnline ? 'online' : 'offline'}, Current: ${isCurrentlyOnline ? 'online' : 'offline'}`);
-
-      // Detect reconnection (went from offline to online)
-      if (isCurrentlyOnline && !wasOnline) {
-        console.log('Network reconnected! Scheduling page refresh...');
-
-        // Wait a moment for the connection to stabilize before refreshing
-        setTimeout(() => {
-          if (window && !window.isDestroyed()) {
-            console.log('Executing page refresh after network reconnection');
-            window.reload();
-          }
-        }, 3000);
-      }
-    } catch (error) {
-      console.error('Error checking network status:', error);
-      // If we hit an exception, assume we're offline
-      isCurrentlyOnline = false;
-    }
-  }, 15000);
-
-  // Perform an immediate check
-  testConnection().then(online => {
-    console.log(`Initial network status: ${online ? 'online' : 'offline'}`);
-    isCurrentlyOnline = online;
-  });
-
-  // Clean up interval when window is closed
-  window.on('closed', () => {
-    console.log('Cleaning up network monitoring');
-    clearInterval(networkCheckInterval);
-  });
 }
 
 // Ensure only one instance of the app runs
@@ -278,7 +183,20 @@ function createBrowserWindow(url, isKiosk, isFullscreen, refreshMinutes, network
   // Load the URL directly
   browserWindow.loadURL(url).catch(err => {
     console.error('Failed to load URL:', err);
+    
+    // Store the original URL in a session variable so we can access it from error.html
+    if (browserWindow && !browserWindow.isDestroyed()) {
+      browserWindow.webContents.session.setStorageItem('failedUrl', url);
+    }
+    
     browserWindow.loadFile(path.join(__dirname, 'error.html'));
+    
+    // Even when loading error.html, continue to monitor the original URL
+    // This way we can reload when it becomes available
+    if (networkRefresh) {
+      console.log('Setting up network monitoring for unavailable URL:', url);
+      monitorNetworkStatus(browserWindow, url);
+    }
   });
 
   // Additional camera access setup for Linux after page loads
@@ -323,82 +241,174 @@ function createBrowserWindow(url, isKiosk, isFullscreen, refreshMinutes, network
   }
 }
 
-// Setup Linux-specific camera permissions for Raspberry Pi
-function setupLinuxCameraPermissions() {
-  if (process.platform === 'linux') {
-    const appName = app.getName();
+// Function to monitor network connectivity with the target URL
+function monitorNetworkStatus(window, targetUrl) {
+  console.log(`Starting network status monitoring for: ${targetUrl}`);
 
-    // For Raspberry Pi OS which is Debian-based
-    const userDataPath = app.getPath('userData');
-    const permScript = path.join(userDataPath, 'setup_cam_permissions.sh');
+  // Track online status
+  let isCurrentlyOnline = true; // Assume online initially
+  let isLocalPortAvailable = true; // Track localhost port availability
 
-    // Create a script to grant camera permissions
-    const scriptContent = `#!/bin/bash
-# Grant camera permissions for ${appName}
-# This needs to run with sudo permissions
-
-# Add user to video group if not already a member
-if ! groups $USER | grep -q "\\bvideo\\b"; then
-  sudo usermod -a -G video $USER
-fi
-
-# Set permissions for video devices
-sudo chmod a+rw /dev/video*
-
-# Ensure udev rules for camera access
-UDEV_RULE_FILE="/etc/udev/rules.d/99-camera-permissions.rules"
-
-if [ ! -f "$UDEV_RULE_FILE" ]; then
-  echo 'SUBSYSTEM=="video4linux", GROUP="video", MODE="0666"' | sudo tee "$UDEV_RULE_FILE"
-  sudo udevadm control --reload-rules
-  sudo udevadm trigger
-fi
-
-echo "Camera permissions setup complete for ${appName}"
-`;
-
-    try {
-      // Write the script to a file
-      fs.writeFileSync(permScript, scriptContent, { mode: 0o755 });
-      console.log(`Created camera permission script at: ${permScript}`);
-
-      // Ask user for permission to run the script
-      dialog.showMessageBox({
-        type: 'question',
-        title: 'Camera Permissions',
-        message: 'Additional permissions are required for camera access on Linux.',
-        detail: 'Would you like to set up camera permissions now? This will require sudo access.',
-        buttons: ['Yes', 'No'],
-        defaultId: 0
-      }).then(result => {
-        if (result.response === 0) {
-          // User agreed, run the script with pkexec or gksudo
-          const terminalCmd = `x-terminal-emulator -e "bash -c '${permScript}; echo Press Enter to close; read'"`;
-          exec(terminalCmd, (error, stdout, stderr) => {
-            if (error) {
-              console.error('Error executing camera permissions script:', error);
-              dialog.showMessageBox({
-                type: 'error',
-                title: 'Permission Setup Failed',
-                message: 'Could not set up camera permissions.',
-                detail: 'Please run the script manually: ' + permScript
-              });
-            } else {
-              console.log('Camera permissions script executed successfully');
-              dialog.showMessageBox({
-                type: 'info',
-                title: 'Camera Permissions',
-                message: 'Camera permissions set up successfully.',
-                detail: 'You may need to restart the application for changes to take effect.'
-              });
-            }
-          });
-        }
-      });
-    } catch (error) {
-      console.error('Failed to create camera permissions script:', error);
-    }
+  // Parse the URL to get the protocol, host, and port
+  let parsedUrl;
+  try {
+    parsedUrl = new URL(targetUrl);
+  } catch (error) {
+    console.error(`Invalid URL for network monitoring: ${targetUrl}`);
+    parsedUrl = new URL('https://www.google.com'); // Fallback to Google if URL is invalid
   }
+
+  // Check if the URL is pointing to localhost
+  const isLocalhostUrl = parsedUrl.hostname === 'localhost' || 
+                        parsedUrl.hostname === '127.0.0.1';
+  
+  // Extract port from URL
+  const port = parsedUrl.port ? parseInt(parsedUrl.port, 10) : 
+              (parsedUrl.protocol === 'https:' ? 443 : 80);
+
+  console.log(`URL analysis: ${parsedUrl.hostname}:${port} (Localhost URL: ${isLocalhostUrl})`);
+
+  // Function to check if a localhost port is available
+  const checkLocalPort = (port) => {
+    return new Promise((resolve) => {
+      const socket = new net.Socket();
+      
+      // Set a timeout for the connection attempt
+      const timeout = setTimeout(() => {
+        socket.destroy();
+        console.log(`Port ${port} connection attempt timed out`);
+        resolve(false);
+      }, 1000);
+      
+      // Attempt to connect to the port
+      socket.connect(port, '127.0.0.1', () => {
+        clearTimeout(timeout);
+        socket.destroy();
+        console.log(`Successfully connected to port ${port}`);
+        resolve(true);
+      });
+      
+      // Handle connection errors
+      socket.on('error', (err) => {
+        clearTimeout(timeout);
+        socket.destroy();
+        console.log(`Port ${port} connection error: ${err.message}`);
+        resolve(false);
+      });
+    });
+  };
+
+  // Use the appropriate method to test connectivity based on URL type
+  const testConnection = async () => {
+    // For localhost URLs, check port availability using TCP
+    if (isLocalhostUrl) {
+      console.log(`Testing localhost port ${port} availability...`);
+      return await checkLocalPort(port);
+    }
+    
+    // For regular URLs, use HTTP/HTTPS request
+    return new Promise((resolve) => {
+      const protocol = parsedUrl.protocol === 'https:' ? require('https') : require('http');
+
+      const options = {
+        hostname: parsedUrl.hostname,
+        path: parsedUrl.pathname || '/',
+        method: 'HEAD', // Use HEAD request for efficiency - we only care about connection, not content
+        timeout: 5000
+      };
+
+      console.log(`Testing connection to: ${parsedUrl.hostname}...`);
+
+      const request = protocol.request(options, (response) => {
+        // Any response means we're online (even if it's a redirect or error code)
+        console.log(`Connection test to ${parsedUrl.hostname}: HTTP ${response.statusCode}`);
+        response.destroy(); // Properly close the connection
+        resolve(true);
+      });
+
+      // Set a timeout to avoid hanging
+      request.setTimeout(5000, () => {
+        console.log(`Connection test to ${parsedUrl.hostname} timed out`);
+        request.destroy();
+        resolve(false);
+      });
+
+      // Handle connection errors
+      request.on('error', (err) => {
+        console.log(`Connection test to ${parsedUrl.hostname} error: ${err.message}`);
+        request.destroy();
+        resolve(false);
+      });
+
+      // End the request
+      request.end();
+    });
+  };
+
+  // Check network status every 15 seconds
+  const networkCheckInterval = setInterval(async () => {
+    try {
+      const wasOnline = isCurrentlyOnline;
+      const wasPortAvailable = isLocalPortAvailable;
+      
+      // Get current connection status
+      isCurrentlyOnline = await testConnection();
+      
+      // Update port status only if it's a localhost URL
+      if (isLocalhostUrl) {
+        isLocalPortAvailable = isCurrentlyOnline;
+        console.log(`Localhost port ${port} status check - Previous: ${wasPortAvailable ? 'available' : 'unavailable'}, Current: ${isLocalPortAvailable ? 'available' : 'unavailable'}`);
+        
+        // Detect port becoming available
+        if (isLocalPortAvailable && !wasPortAvailable) {
+          console.log(`Localhost port ${port} is now available! Scheduling page refresh...`);
+          
+          // Wait a moment for the service to fully initialize before refreshing
+          setTimeout(() => {
+            if (window && !window.isDestroyed()) {
+              console.log(`Executing page refresh after localhost port ${port} became available`);
+              window.reload();
+            }
+          }, 2000);
+        }
+      } else {
+        // Regular network status handling for non-localhost URLs
+        console.log(`Network status check - Previous: ${wasOnline ? 'online' : 'offline'}, Current: ${isCurrentlyOnline ? 'online' : 'offline'}`);
+
+        // Detect reconnection (went from offline to online)
+        if (isCurrentlyOnline && !wasOnline) {
+          console.log('Network reconnected! Scheduling page refresh...');
+
+          // Wait a moment for the connection to stabilize before refreshing
+          setTimeout(() => {
+            if (window && !window.isDestroyed()) {
+              console.log('Executing page refresh after network reconnection');
+              window.reload();
+            }
+          }, 3000);
+        }
+      }
+    } catch (error) {
+      console.error('Error checking network status:', error);
+      // If we hit an exception, assume we're offline
+      isCurrentlyOnline = false;
+      if (isLocalhostUrl) {
+        isLocalPortAvailable = false;
+      }
+    }
+  }, 5000); // Check more frequently (every 5 seconds) to better detect localhost ports becoming available
+
+  // Perform an immediate check
+  testConnection().then(online => {
+    console.log(`Initial network status: ${online ? 'online' : 'offline'}`);
+    isCurrentlyOnline = online;
+  });
+
+  // Clean up interval when window is closed
+  window.on('closed', () => {
+    console.log('Cleaning up network monitoring');
+    clearInterval(networkCheckInterval);
+  });
 }
 
 app.whenReady().then(() => {
@@ -647,7 +657,45 @@ ipcMain.on('get-settings', (event) => {
   event.sender.send('settings-loaded', settings);
 });
 
-// In the case we don't set permission handlers elsewhere, set a global one
+// Handle get-failed-url request from renderer (used in error.html)
+ipcMain.handle('get-failed-url', async (event) => {
+  if (!browserWindow || browserWindow.isDestroyed()) {
+    return null;
+  }
+  
+  try {
+    // Retrieve the failed URL from session storage
+    const failedUrl = await browserWindow.webContents.session.getStorageItem('failedUrl');
+    return failedUrl || null;
+  } catch (error) {
+    console.error('Error getting failed URL:', error);
+    return null;
+  }
+});
+
+// Handle retry-url request from renderer (used in error.html)
+ipcMain.on('retry-url', (event) => {
+  if (!browserWindow || browserWindow.isDestroyed()) {
+    return;
+  }
+  
+  // Attempt to retrieve the failed URL
+  browserWindow.webContents.session.getStorageItem('failedUrl')
+    .then(failedUrl => {
+      if (failedUrl) {
+        console.log('Retrying connection to URL:', failedUrl);
+        browserWindow.loadURL(failedUrl).catch(err => {
+          console.error('Failed to load URL again:', err);
+          // No need to reload error.html as we're already there
+        });
+      }
+    })
+    .catch(error => {
+      console.error('Error retrieving failed URL for retry:', error);
+    });
+});
+
+// Enhanced camera/microphone permissions handler
 app.on('web-contents-created', (event, contents) => {
   // For non-Linux platforms
   if (process.platform !== 'linux') {

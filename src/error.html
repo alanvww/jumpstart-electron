@@ -50,7 +50,7 @@
       line-height: 1.5;
     }
     
-    .btn-back {
+    .btn-back, .btn-retry {
       background-color: #3498db;
       color: white;
       border: none;
@@ -59,16 +59,50 @@
       font-size: 16px;
       cursor: pointer;
       transition: background-color 0.3s;
+      margin: 0 10px;
     }
     
-    .btn-back:hover {
+    .btn-back:hover, .btn-retry:hover {
       background-color: #2980b9;
+    }
+    
+    .btn-retry {
+      background-color: #2ecc71;
+    }
+    
+    .btn-retry:hover {
+      background-color: #27ae60;
+    }
+    
+    .buttons-container {
+      display: flex;
+      margin-bottom: 20px;
     }
     
     .shortcut-hint {
       margin-top: 20px;
       font-size: 14px;
       color: #95a5a6;
+    }
+    
+    .network-status {
+      margin-top: 15px;
+      padding: 10px 15px;
+      background-color: #f8f9fa;
+      border-radius: 4px;
+      border-left: 4px solid #3498db;
+      font-size: 14px;
+      color: #555;
+      text-align: left;
+      width: 100%;
+      box-sizing: border-box;
+    }
+    
+    .localhost-note {
+      font-style: italic;
+      margin-top: 10px;
+      color: #7f8c8d;
+      font-size: 13px;
     }
   </style>
 </head>
@@ -80,13 +114,57 @@
       The URL you entered could not be loaded. This could be due to network issues, 
       security restrictions, or the website may not exist.
     </p>
-    <button class="btn-back" id="back-btn">
-      Back to Settings
-    </button>
+    
+    <div class="network-status">
+      <strong>Status:</strong> Monitoring connection to the URL...
+      <div class="localhost-note" id="localhost-message">
+        If this is a localhost URL with a port, the app will automatically reload when the port becomes available.
+      </div>
+    </div>
+    
+    <div class="buttons-container">
+      <button class="btn-retry" id="retry-btn">
+        Try Again
+      </button>
+      <button class="btn-back" id="back-btn">
+        Back to Settings
+      </button>
+    </div>
+    
     <p class="shortcut-hint">You can also press Ctrl+Shift+Q to return to settings</p>
   </div>
 
   <script>
+    let failedUrl = "";
+    
+    // Get the failed URL from the main process using the getFailedUrl API
+    window.electronAPI.getFailedUrl().then(url => {
+      if (url) {
+        failedUrl = url;
+        console.log("Retrieved failed URL:", failedUrl);
+        
+        // Check if URL is localhost
+        const isLocalhost = failedUrl.includes('localhost:') || failedUrl.includes('127.0.0.1:');
+        
+        // Update message based on URL type
+        if (!isLocalhost) {
+          document.getElementById('localhost-message').textContent = 
+            "The app will automatically reload when the network connection is restored.";
+        }
+      } else {
+        console.log("No failed URL was retrieved");
+      }
+    }).catch(err => {
+      console.error("Error retrieving failed URL:", err);
+    });
+    
+    // Update retry button to use the retryUrl API
+    document.getElementById('retry-btn').addEventListener('click', () => {
+      console.log("Retrying URL");
+      window.electronAPI.retryUrl();
+    });
+    
+    // Back button
     document.getElementById('back-btn').addEventListener('click', () => {
       window.electronAPI.exitKiosk();
     });
