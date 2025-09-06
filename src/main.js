@@ -1,73 +1,12 @@
-const { app, BrowserWindow, ipcMain, session, dialog } = require('electron');
+const { app, BrowserWindow, ipcMain } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
 const { exec } = require('child_process');
 const net = require('net');
 
-// Function to enable camera access on Linux
-function enableCameraAccess(browserWindow) {
-  // Check if we're on Linux
-  if (process.platform === 'linux') {
-    console.log('Setting up additional camera access for Linux');
-
-    // Add required preferences to the session
-    browserWindow.webContents.session.webRequest.onHeadersReceived(
-      { urls: ['*://*/*'] },
-      (details, callback) => {
-        callback({
-          responseHeaders: {
-            ...details.responseHeaders,
-            'Feature-Policy': ['camera *', 'microphone *'],
-            'Permissions-Policy': ['camera=*, microphone=*']
-          }
-        });
-      }
-    );
-
-    // When page has loaded, inject a script to ensure camera API is ready
-    browserWindow.webContents.on('did-finish-load', () => {
-      browserWindow.webContents.executeJavaScript(`
-        // Check if mediaDevices exists
-        if (!navigator.mediaDevices) {
-          console.log('mediaDevices not found, creating...');
-          navigator.mediaDevices = {};
-        }
-
-        // Check if getUserMedia exists
-        if (!navigator.mediaDevices.getUserMedia) {
-          console.log('getUserMedia not found, creating...');
-          navigator.mediaDevices.getUserMedia = function(constraints) {
-            // First try the new style
-            var getUserMedia = navigator.webkitGetUserMedia || navigator.mozGetUserMedia;
-            
-            if (!getUserMedia) {
-              console.error('getUserMedia is not available in this browser');
-              return Promise.reject(new Error('getUserMedia is not implemented in this browser'));
-            }
-
-            // Wrap the old API in a Promise
-            return new Promise(function(resolve, reject) {
-              getUserMedia.call(navigator, constraints, resolve, reject);
-            });
-          };
-        }
-
-        // Report camera status
-        console.log('Camera API status: navigator.mediaDevices =', 
-                    navigator.mediaDevices ? 'available' : 'not available');
-        console.log('getUserMedia =', 
-                    navigator.mediaDevices.getUserMedia ? 'available' : 'not available');
-      `)
-        .then(() => {
-          console.log('Camera access script injected successfully');
-        })
-        .catch(err => {
-          console.error('Failed to inject camera access script:', err);
-        });
-    });
-  }
-}
+// In-memory storage for last failed URL
+let lastFailedUrl = null;
 
 // Ensure only one instance of the app runs
 console.log('Requesting single instance lock...');
@@ -106,7 +45,9 @@ function createMainWindow() {
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       nodeIntegration: false,
-      contextIsolation: true
+      contextIsolation: true,
+      sandbox: true,
+      devTools: !app.isPackaged
     }
   });
   mainWindow.loadFile(path.join(__dirname, 'index.html'));
@@ -123,25 +64,24 @@ function createBrowserWindow(url, isKiosk, isFullscreen, refreshMinutes, network
       preload: path.join(__dirname, 'preload.js'),
       nodeIntegration: false,
       contextIsolation: true,
-      webSecurity: true
+      webSecurity: true,
+      sandbox: true,
+      devTools: !app.isPackaged
     }
   });
 
-  // Explicitly enable camera access for Linux
-  if (process.platform === 'linux') {
-    // Set specific webPreferences for media access
-    browserWindow.webContents.session.setPermissionRequestHandler((webContents, permission, callback) => {
-      if (permission === 'media' || permission === 'camera' || permission === 'microphone') {
-        console.log(`Granting ${permission} permission on Linux`);
-        callback(true);
-      } else {
-        callback(false);
+  // Harden navigation and popups
+  browserWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  browserWindow.webContents.on('will-navigate', (event, navigateUrl) => {
+    try {
+      const parsed = new URL(navigateUrl);
+      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+        event.preventDefault();
       }
-    });
-
-    // Enable camera specific features
-    enableCameraAccess(browserWindow);
-  }
+    } catch (_) {
+      event.preventDefault();
+    }
+  });
 
   // Set up event to show settings page when browser window is closed
   browserWindow.on('closed', () => {
@@ -169,25 +109,26 @@ function createBrowserWindow(url, isKiosk, isFullscreen, refreshMinutes, network
 
   // Register global shortcut for exiting kiosk mode
   const { globalShortcut } = require('electron');
-  globalShortcut.register('CommandOrControl+Shift+Q', () => {
+  const exitAccelerator = 'CommandOrControl+Shift+Q';
+  const registered = globalShortcut.register(exitAccelerator, () => {
     if (browserWindow && !browserWindow.isDestroyed()) {
       browserWindow.close();
     }
   });
+  if (!registered) {
+    console.warn('Failed to register global shortcut for exiting kiosk mode');
+  }
 
   // Clean up shortcut when window is closed
   browserWindow.on('closed', () => {
-    globalShortcut.unregisterAll();
+    globalShortcut.unregister(exitAccelerator);
   });
 
   // Load the URL directly
   browserWindow.loadURL(url).catch(err => {
     console.error('Failed to load URL:', err);
-    
-    // Store the original URL in a session variable so we can access it from error.html
-    if (browserWindow && !browserWindow.isDestroyed()) {
-      browserWindow.webContents.session.setStorageItem('failedUrl', url);
-    }
+    // Store the original URL in memory so we can access it from error.html
+    lastFailedUrl = url;
     
     browserWindow.loadFile(path.join(__dirname, 'error.html'));
     
@@ -198,22 +139,6 @@ function createBrowserWindow(url, isKiosk, isFullscreen, refreshMinutes, network
       monitorNetworkStatus(browserWindow, url);
     }
   });
-
-  // Additional camera access setup for Linux after page loads
-  if (process.platform === 'linux') {
-    browserWindow.webContents.on('did-finish-load', () => {
-      console.log('Page loaded, ensuring camera access on Linux');
-      // This forces camera permissions to be granted again
-      browserWindow.webContents.session.setPermissionRequestHandler((webContents, permission, callback) => {
-        if (permission === 'media' || permission === 'camera' || permission === 'microphone') {
-          console.log(`Re-granting ${permission} permission after page load`);
-          callback(true);
-        } else {
-          callback(false);
-        }
-      });
-    });
-  }
 
   // Set up auto-refresh timer if enabled
   if (refreshMinutes && refreshMinutes > 0) {
@@ -260,7 +185,8 @@ function monitorNetworkStatus(window, targetUrl) {
 
   // Check if the URL is pointing to localhost
   const isLocalhostUrl = parsedUrl.hostname === 'localhost' || 
-                        parsedUrl.hostname === '127.0.0.1';
+                        parsedUrl.hostname === '127.0.0.1' ||
+                        parsedUrl.hostname === '::1';
   
   // Extract port from URL
   const port = parsedUrl.port ? parseInt(parsedUrl.port, 10) : 
@@ -345,7 +271,7 @@ function monitorNetworkStatus(window, targetUrl) {
     });
   };
 
-  // Check network status every 15 seconds
+  // Check network status every 5 seconds
   const networkCheckInterval = setInterval(async () => {
     try {
       const wasOnline = isCurrentlyOnline;
@@ -367,7 +293,7 @@ function monitorNetworkStatus(window, targetUrl) {
           setTimeout(() => {
             if (window && !window.isDestroyed()) {
               console.log(`Executing page refresh after localhost port ${port} became available`);
-              window.reload();
+              window.reloadIgnoringCache();
             }
           }, 2000);
         }
@@ -383,7 +309,7 @@ function monitorNetworkStatus(window, targetUrl) {
           setTimeout(() => {
             if (window && !window.isDestroyed()) {
               console.log('Executing page refresh after network reconnection');
-              window.reload();
+              window.reloadIgnoringCache();
             }
           }, 3000);
         }
@@ -412,8 +338,6 @@ function monitorNetworkStatus(window, targetUrl) {
 }
 
 app.whenReady().then(() => {
-  // Check for Linux camera permission issues on first run
-  setupLinuxCameraPermissions();
 
   // Check if we have saved settings with a URL
   const settings = loadSettings();
@@ -455,30 +379,12 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
 });
 
-// Store settings in a file
-
-// Get the app data path based on platform
-function getAppDataPath() {
-  const appName = 'jumpstart';
-  switch (process.platform) {
-    case 'win32':
-      return path.join(process.env.APPDATA, appName);
-    case 'darwin':
-      return path.join(os.homedir(), 'Library', 'Application Support', appName);
-    case 'linux':
-      return path.join(os.homedir(), '.config', appName);
-    default:
-      return path.join(os.homedir(), '.config', appName);
-  }
+// Store settings in a file under Electron userData
+const userDataPath = app.getPath('userData');
+if (!fs.existsSync(userDataPath)) {
+  fs.mkdirSync(userDataPath, { recursive: true });
 }
-
-// Ensure app data directory exists
-const appDataPath = getAppDataPath();
-if (!fs.existsSync(appDataPath)) {
-  fs.mkdirSync(appDataPath, { recursive: true });
-}
-
-const settingsPath = path.join(appDataPath, 'settings.json');
+const settingsPath = path.join(userDataPath, 'settings.json');
 
 // Save settings to file
 function saveSettings(settings) {
@@ -626,6 +532,16 @@ ipcMain.on('save-settings', (event, settings) => {
   if (!url.startsWith('http://') && !url.startsWith('https://')) {
     validUrl = 'https://' + url;
   }
+  // Basic validation: only allow http/https URLs
+  try {
+    const parsed = new URL(validUrl);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      throw new Error('Unsupported URL protocol');
+    }
+  } catch (e) {
+    console.error('Invalid URL provided in settings:', e.message);
+    return;
+  }
 
   if (mainWindow) {
     mainWindow.close();
@@ -659,18 +575,7 @@ ipcMain.on('get-settings', (event) => {
 
 // Handle get-failed-url request from renderer (used in error.html)
 ipcMain.handle('get-failed-url', async (event) => {
-  if (!browserWindow || browserWindow.isDestroyed()) {
-    return null;
-  }
-  
-  try {
-    // Retrieve the failed URL from session storage
-    const failedUrl = await browserWindow.webContents.session.getStorageItem('failedUrl');
-    return failedUrl || null;
-  } catch (error) {
-    console.error('Error getting failed URL:', error);
-    return null;
-  }
+  return lastFailedUrl || null;
 });
 
 // Handle retry-url request from renderer (used in error.html)
@@ -678,34 +583,44 @@ ipcMain.on('retry-url', (event) => {
   if (!browserWindow || browserWindow.isDestroyed()) {
     return;
   }
-  
-  // Attempt to retrieve the failed URL
-  browserWindow.webContents.session.getStorageItem('failedUrl')
-    .then(failedUrl => {
-      if (failedUrl) {
-        console.log('Retrying connection to URL:', failedUrl);
-        browserWindow.loadURL(failedUrl).catch(err => {
-          console.error('Failed to load URL again:', err);
-          // No need to reload error.html as we're already there
-        });
-      }
-    })
-    .catch(error => {
-      console.error('Error retrieving failed URL for retry:', error);
-    });
-});
-
-// Enhanced camera/microphone permissions handler
-app.on('web-contents-created', (event, contents) => {
-  // For non-Linux platforms
-  if (process.platform !== 'linux') {
-    contents.session.setPermissionRequestHandler((webContents, permission, callback) => {
-      if (permission === 'media' || permission === 'camera' || permission === 'microphone') {
-        console.log(`Allowing ${permission} permission on non-Linux platform`);
-        callback(true);
-      } else {
-        callback(false);
-      }
+  if (lastFailedUrl) {
+    console.log('Retrying connection to URL:', lastFailedUrl);
+    browserWindow.loadURL(lastFailedUrl).catch(err => {
+      console.error('Failed to load URL again:', err);
+      // No need to reload error.html as we're already there
     });
   }
+});
+
+// Permissions and stability hardening
+app.on('web-contents-created', (event, contents) => {
+  contents.session.setPermissionRequestHandler((webContents, permission, callback) => {
+    if (permission === 'media' || permission === 'camera' || permission === 'microphone') {
+      try {
+        const url = new URL(webContents.getURL());
+        const isHttps = url.protocol === 'https:';
+        const isLocal = url.hostname === 'localhost' || url.hostname === '127.0.0.1' || url.hostname === '::1';
+        callback(isHttps || isLocal);
+      } catch (_) {
+        callback(false);
+      }
+    } else {
+      callback(false);
+    }
+  });
+
+  contents.on('render-process-gone', (e, details) => {
+    console.error('Renderer process gone:', details);
+    if (browserWindow && !browserWindow.isDestroyed()) {
+      browserWindow.loadFile(path.join(__dirname, 'error.html'));
+    }
+  });
+});
+
+process.on('uncaughtException', (err) => {
+  console.error('Uncaught exception:', err);
+});
+
+process.on('unhandledRejection', (reason) => {
+  console.error('Unhandled promise rejection:', reason);
 });

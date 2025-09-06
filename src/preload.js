@@ -13,9 +13,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Exit kiosk mode
   exitKiosk: () => ipcRenderer.send('exit-kiosk'),
 
-  // Receive URL to load in browser
-  onLoadUrl: (callback) => ipcRenderer.on('load-url', (event, url) => callback(url)),
-
   // Network status methods
   getNetworkStatus: () => navigator.onLine,
 

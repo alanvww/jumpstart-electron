@@ -18,7 +18,7 @@
   },
   "license": "MIT",
   "devDependencies": {
-    "electron": "latest",
+    "electron": "28.3.3",
     "electron-builder": "^24.0.0"
   },
   "dependencies": {},
@@ -39,7 +39,11 @@
         "zip"
       ],
       "darkModeSupport": true,
-      "icon": "icons/icon.png"
+      "icon": "icons/icon.icns",
+      "extendInfo": {
+        "NSCameraUsageDescription": "Jumpstart needs access to the camera for sites that request it.",
+        "NSMicrophoneUsageDescription": "Jumpstart needs access to the microphone for sites that request it."
+      }
     },
     "win": {
       "target": [
