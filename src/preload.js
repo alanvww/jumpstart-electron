@@ -30,4 +30,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
   
   // Try loading the URL again
   retryUrl: () => ipcRenderer.send('retry-url')
+,
+
+  // Open camera diagnostics window
+  openCameraDiagnostics: () => ipcRenderer.send('open-camera-diagnostics')
+,
+
+  // Diagnostics helpers
+  getPlatformInfo: () => ({ platform: process.platform, arch: process.arch, versions: process.versions })
 });

@@ -40,6 +40,44 @@ if (process.platform === 'linux') {
   }
 }
 
+// Allow camera on insecure origins if user configured an HTTP URL (non-localhost)
+// Must be set BEFORE app 'ready' and window creation.
+try {
+  const earlyAppName = 'jumpstart';
+  function earlyAppDataPath() {
+    switch (process.platform) {
+      case 'win32':
+        return path.join(process.env.APPDATA || '', earlyAppName);
+      case 'darwin':
+        return path.join(os.homedir(), 'Library', 'Application Support', earlyAppName);
+      case 'linux':
+      default:
+        return path.join(os.homedir(), '.config', earlyAppName);
+    }
+  }
+  const earlySettingsPath = path.join(earlyAppDataPath(), 'settings.json');
+  if (fs.existsSync(earlySettingsPath)) {
+    const raw = fs.readFileSync(earlySettingsPath, 'utf8');
+    const cfg = JSON.parse(raw || '{}');
+    if (cfg && cfg.url && typeof cfg.url === 'string') {
+      const u = cfg.url.startsWith('http') ? cfg.url : `https://${cfg.url}`;
+      try {
+        const parsed = new URL(u);
+        const isHttp = parsed.protocol === 'http:';
+        const isLocalhost = parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1';
+        if (isHttp && !isLocalhost) {
+          const origin = `${parsed.protocol}//${parsed.host}`;
+          app.commandLine.appendSwitch('unsafely-treat-insecure-origin-as-secure', origin);
+          app.commandLine.appendSwitch('allow-running-insecure-content');
+          console.log(`[Early Config] Treating insecure origin as secure for media: ${origin}`);
+        }
+      } catch (_) {}
+    }
+  }
+} catch (e) {
+  console.log('[Early Config] Failed processing insecure origin allowance:', e.message);
+}
+
 // Function to enable camera access on Linux
 function enableCameraAccess(browserWindow) {
   // Check if we're on Linux
@@ -133,6 +171,7 @@ if (!gotTheLock) {
 let mainWindow, browserWindow;
 let refreshTimer = null;
 let lastFailedUrl = null; // store last failed URL cross-platform
+let diagnosticsWindow = null;
 
 function createMainWindow() {
   mainWindow = new BrowserWindow({
@@ -273,6 +312,49 @@ function createBrowserWindow(url, isKiosk, isFullscreen, refreshMinutes, network
   } else {
     console.log('Network status monitoring is disabled');
   }
+}
+
+function createDiagnosticsWindow() {
+  if (diagnosticsWindow && !diagnosticsWindow.isDestroyed()) {
+    diagnosticsWindow.focus();
+    return;
+  }
+
+  diagnosticsWindow = new BrowserWindow({
+    width: 900,
+    height: 700,
+    title: 'Camera Diagnostics',
+    icon: path.join(__dirname, '..', 'icons', 'icon.png'),
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      nodeIntegration: false,
+      contextIsolation: true,
+      webSecurity: true
+    }
+  });
+
+  // Ensure media permissions are allowed
+  diagnosticsWindow.webContents.session.setPermissionRequestHandler((webContents, permission, callback) => {
+    if (permission === 'media' || permission === 'camera' || permission === 'microphone') {
+      console.log(`[Diagnostics] Granting ${permission} permission`);
+      callback(true);
+    } else {
+      callback(false);
+    }
+  });
+
+  diagnosticsWindow.on('closed', () => {
+    diagnosticsWindow = null;
+  });
+
+  diagnosticsWindow.webContents.on('media-started-playing', () => {
+    console.log('[Diagnostics] Media started playing');
+  });
+  diagnosticsWindow.webContents.on('media-paused', () => {
+    console.log('[Diagnostics] Media paused');
+  });
+
+  diagnosticsWindow.loadFile(path.join(__dirname, 'camera.html'));
 }
 
 // Function to monitor network connectivity with the target URL
@@ -733,4 +815,23 @@ app.on('web-contents-created', (event, contents) => {
       }
     });
   }
+
+  // Log permission checks on Linux for diagnostics
+  if (process.platform === 'linux') {
+    try {
+      contents.session.setPermissionCheckHandler((webContents, permission, requestingOrigin, details) => {
+        const url = details && details.securityOrigin ? details.securityOrigin : requestingOrigin;
+        const result = permission === 'media' || permission === 'camera' || permission === 'microphone';
+        console.log(`[Linux Permissions] Check: permission=${permission} origin=${url} allow=${result}`);
+        return result;
+      });
+    } catch (e) {
+      console.log('[Linux Permissions] setPermissionCheckHandler not available:', e.message);
+    }
+  }
+});
+
+// IPC to open diagnostics window
+ipcMain.on('open-camera-diagnostics', () => {
+  createDiagnosticsWindow();
 });
