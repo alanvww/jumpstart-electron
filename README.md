@@ -12,6 +12,22 @@
 
 A simple cross-platform Electron wrapper lets you open any URL in a dedicated window with options for kiosk mode, full screen mode, and system startup, useful for setting up creative coding projects.
 
+## Platform support
+
+- macOS (Intel and Apple Silicon)
+- Windows (x64 and ARM64)
+- Linux desktop (x64, ARM64, ARMv7l) including Raspberry Pi
+
+### Raspberry Pi tips
+
+- Ensure a desktop session is running (Wayland and X11 supported)
+- GPU flags are enabled by default (EGL, zero-copy, GPU rasterization)
+- If you see rendering issues, try: `ELECTRON_EXTRA_LAUNCH_ARGS="--use-gl=desktop" npm start`
+
+### Camera and microphone
+
+The app auto-grants media permissions. On macOS, usage descriptions are provided and prompts will appear the first time.
+
 ## Features
 
 - **Settings Page**: Configure how the browser will run

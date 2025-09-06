@@ -5,6 +5,41 @@ const os = require('os');
 const { exec } = require('child_process');
 const net = require('net');
 
+// Detect Raspberry Pi (best-effort)
+function isRaspberryPi() {
+  if (process.platform !== 'linux') return false;
+  try {
+    const model = fs.readFileSync('/proc/device-tree/model', 'utf8').toLowerCase();
+    if (model.includes('raspberry')) return true;
+  } catch (_) {}
+  try {
+    const cpuinfo = fs.readFileSync('/proc/cpuinfo', 'utf8').toLowerCase();
+    if (cpuinfo.includes('raspberry')) return true;
+  } catch (_) {}
+  return false;
+}
+
+// Apply platform-specific Chromium flags early (helps Linux/Wayland/Raspberry Pi)
+if (process.platform === 'linux') {
+  const features = [];
+  const onWayland = process.env.XDG_SESSION_TYPE === 'wayland';
+  if (onWayland) {
+    features.push('UseOzonePlatform');
+    app.commandLine.appendSwitch('ozone-platform', 'wayland');
+  }
+  // Prefer EGL / enable GPU path on ARM and Raspberry Pi
+  if (isRaspberryPi() || process.arch === 'arm' || process.arch === 'arm64') {
+    app.commandLine.appendSwitch('use-gl', 'egl');
+    app.commandLine.appendSwitch('ignore-gpu-blocklist');
+    app.commandLine.appendSwitch('enable-gpu-rasterization');
+    app.commandLine.appendSwitch('enable-zero-copy');
+    features.push('VaapiVideoDecoder');
+  }
+  if (features.length > 0) {
+    app.commandLine.appendSwitch('enable-features', features.join(','));
+  }
+}
+
 // Function to enable camera access on Linux
 function enableCameraAccess(browserWindow) {
   // Check if we're on Linux
@@ -97,6 +132,7 @@ if (!gotTheLock) {
 
 let mainWindow, browserWindow;
 let refreshTimer = null;
+let lastFailedUrl = null; // store last failed URL cross-platform
 
 function createMainWindow() {
   mainWindow = new BrowserWindow({
@@ -184,10 +220,8 @@ function createBrowserWindow(url, isKiosk, isFullscreen, refreshMinutes, network
   browserWindow.loadURL(url).catch(err => {
     console.error('Failed to load URL:', err);
     
-    // Store the original URL in a session variable so we can access it from error.html
-    if (browserWindow && !browserWindow.isDestroyed()) {
-      browserWindow.webContents.session.setStorageItem('failedUrl', url);
-    }
+    // Store the original URL in memory so we can access it from error.html
+    lastFailedUrl = url;
     
     browserWindow.loadFile(path.join(__dirname, 'error.html'));
     
@@ -664,9 +698,7 @@ ipcMain.handle('get-failed-url', async (event) => {
   }
   
   try {
-    // Retrieve the failed URL from session storage
-    const failedUrl = await browserWindow.webContents.session.getStorageItem('failedUrl');
-    return failedUrl || null;
+    return lastFailedUrl || null;
   } catch (error) {
     console.error('Error getting failed URL:', error);
     return null;
@@ -679,20 +711,13 @@ ipcMain.on('retry-url', (event) => {
     return;
   }
   
-  // Attempt to retrieve the failed URL
-  browserWindow.webContents.session.getStorageItem('failedUrl')
-    .then(failedUrl => {
-      if (failedUrl) {
-        console.log('Retrying connection to URL:', failedUrl);
-        browserWindow.loadURL(failedUrl).catch(err => {
-          console.error('Failed to load URL again:', err);
-          // No need to reload error.html as we're already there
-        });
-      }
-    })
-    .catch(error => {
-      console.error('Error retrieving failed URL for retry:', error);
+  if (lastFailedUrl) {
+    console.log('Retrying connection to URL:', lastFailedUrl);
+    browserWindow.loadURL(lastFailedUrl).catch(err => {
+      console.error('Failed to load URL again:', err);
+      // No need to reload error.html as we're already there
     });
+  }
 });
 
 // Enhanced camera/microphone permissions handler
