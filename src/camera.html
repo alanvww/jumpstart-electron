@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Camera Diagnostics</title>
+  <link rel="stylesheet" href="style.css">
+  <style>
+    .row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+    .col { display: flex; flex-direction: column; }
+    .panel { background: #fff; border-radius: 8px; padding: 16px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); margin: 12px 0; }
+    .log { background: #0c1222; color: #cbd5e1; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; padding: 12px; border-radius: 6px; height: 160px; overflow: auto; white-space: pre-wrap; }
+    video { width: 100%; max-height: 420px; background: #000; border-radius: 8px; }
+    select, input[type="number"], button { padding: 8px 10px; }
+    .kv { font-size: 14px; color: #475569; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Camera Diagnostics</h1>
+
+    <div class="panel">
+      <div class="row">
+        <div class="col" style="min-width:220px;">
+          <label for="device">Video Device</label>
+          <select id="device"></select>
+        </div>
+        <div class="col">
+          <label>Resolution</label>
+          <div class="row">
+            <input type="number" id="width" placeholder="width" min="160" value="1280" />
+            <input type="number" id="height" placeholder="height" min="120" value="720" />
+            <input type="number" id="fps" placeholder="fps" min="1" value="30" />
+          </div>
+        </div>
+        <div class="col">
+          <label>&nbsp;</label>
+          <div class="row">
+            <button id="start">Start</button>
+            <button id="stop">Stop</button>
+          </div>
+        </div>
+      </div>
+      <div class="kv" id="env"></div>
+    </div>
+
+    <div class="panel">
+      <video id="video" playsinline autoplay muted></video>
+    </div>
+
+    <div class="panel">
+      <strong>Track Settings</strong>
+      <div class="kv" id="trackSettings">-</div>
+      <strong>Capabilities</strong>
+      <div class="kv" id="trackCapabilities">-</div>
+    </div>
+
+    <div class="panel">
+      <strong>Logs</strong>
+      <div class="log" id="log"></div>
+    </div>
+  </div>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const log = (...args) => { const l = args.map(x => (typeof x === 'object' ? JSON.stringify(x, null, 2) : String(x))).join(' '); $('log').textContent += `\n${new Date().toISOString()} ${l}`; $('log').scrollTop = $('log').scrollHeight; console.log(...args); };
+    let currentStream = null;
+
+    function envInfo() {
+      const runtime = window.electronAPI.getPlatformInfo ? window.electronAPI.getPlatformInfo() : {};
+      const info = {
+        platform: navigator.platform,
+        userAgent: navigator.userAgent,
+        onLine: navigator.onLine,
+        electron: runtime,
+      };
+      $('env').textContent = JSON.stringify(info);
+    }
+
+    async function listDevices(selectId) {
+      try {
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const videos = devices.filter(d => d.kind === 'videoinput');
+        const sel = $(selectId);
+        sel.innerHTML = '';
+        for (const d of videos) {
+          const opt = document.createElement('option');
+          opt.value = d.deviceId;
+          opt.textContent = d.label || `Camera ${sel.length+1}`;
+          sel.appendChild(opt);
+        }
+        if (videos.length === 0) log('No videoinput devices found. Ensure v4l2 device is present and permissions allow access.');
+      } catch (e) { log('enumerateDevices error:', e.message); }
+    }
+
+    async function start() {
+      try {
+        if (currentStream) stop();
+        const deviceId = $('device').value || undefined;
+        const width = parseInt($('width').value, 10) || 1280;
+        const height = parseInt($('height').value, 10) || 720;
+        const fps = parseInt($('fps').value, 10) || 30;
+
+        const constraints = {
+          audio: false,
+          video: {
+            deviceId: deviceId ? { exact: deviceId } : undefined,
+            width: { ideal: width },
+            height: { ideal: height },
+            frameRate: { ideal: fps }
+          }
+        };
+
+        log('Requesting getUserMedia with constraints:', constraints);
+        const stream = await navigator.mediaDevices.getUserMedia(constraints);
+        currentStream = stream;
+        $('video').srcObject = stream;
+
+        const track = stream.getVideoTracks()[0];
+        if (track) {
+          const settings = track.getSettings ? track.getSettings() : {};
+          const caps = track.getCapabilities ? track.getCapabilities() : {};
+          $('trackSettings').textContent = JSON.stringify(settings, null, 2);
+          $('trackCapabilities').textContent = JSON.stringify(caps, null, 2);
+          log('Track started:', settings);
+          track.onended = () => log('Track ended');
+        } else {
+          log('No video track in stream');
+        }
+      } catch (e) {
+        log('getUserMedia error:', e.name, e.message);
+        if (e.name === 'NotAllowedError') {
+          log('Permission denied. On Linux, ensure user is in video group and udev permissions allow access to /dev/video*');
+        }
+        if (e.name === 'NotFoundError') {
+          log('No suitable camera found for given constraints. Try removing deviceId and lowering resolution.');
+        }
+      }
+    }
+
+    function stop() {
+      if (currentStream) {
+        for (const t of currentStream.getTracks()) t.stop();
+        currentStream = null;
+        $('video').srcObject = null;
+        log('Stopped current stream');
+      }
+    }
+
+    window.addEventListener('DOMContentLoaded', async () => {
+      envInfo();
+      await listDevices('device');
+    });
+
+    $('start').addEventListener('click', start);
+    $('stop').addEventListener('click', stop);
+
+    navigator.mediaDevices.addEventListener('devicechange', async () => {
+      log('devicechange event');
+      await listDevices('device');
+    });
+  </script>
+</body>
+</html>

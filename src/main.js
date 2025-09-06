@@ -5,6 +5,79 @@ const os = require('os');
 const { exec } = require('child_process');
 const net = require('net');
 
+// Detect Raspberry Pi (best-effort)
+function isRaspberryPi() {
+  if (process.platform !== 'linux') return false;
+  try {
+    const model = fs.readFileSync('/proc/device-tree/model', 'utf8').toLowerCase();
+    if (model.includes('raspberry')) return true;
+  } catch (_) {}
+  try {
+    const cpuinfo = fs.readFileSync('/proc/cpuinfo', 'utf8').toLowerCase();
+    if (cpuinfo.includes('raspberry')) return true;
+  } catch (_) {}
+  return false;
+}
+
+// Apply platform-specific Chromium flags early (helps Linux/Wayland/Raspberry Pi)
+if (process.platform === 'linux') {
+  const features = [];
+  const onWayland = process.env.XDG_SESSION_TYPE === 'wayland';
+  if (onWayland) {
+    features.push('UseOzonePlatform');
+    app.commandLine.appendSwitch('ozone-platform', 'wayland');
+  }
+  // Prefer EGL / enable GPU path on ARM and Raspberry Pi
+  if (isRaspberryPi() || process.arch === 'arm' || process.arch === 'arm64') {
+    app.commandLine.appendSwitch('use-gl', 'egl');
+    app.commandLine.appendSwitch('ignore-gpu-blocklist');
+    app.commandLine.appendSwitch('enable-gpu-rasterization');
+    app.commandLine.appendSwitch('enable-zero-copy');
+    features.push('VaapiVideoDecoder');
+  }
+  if (features.length > 0) {
+    app.commandLine.appendSwitch('enable-features', features.join(','));
+  }
+}
+
+// Allow camera on insecure origins if user configured an HTTP URL (non-localhost)
+// Must be set BEFORE app 'ready' and window creation.
+try {
+  const earlyAppName = 'jumpstart';
+  function earlyAppDataPath() {
+    switch (process.platform) {
+      case 'win32':
+        return path.join(process.env.APPDATA || '', earlyAppName);
+      case 'darwin':
+        return path.join(os.homedir(), 'Library', 'Application Support', earlyAppName);
+      case 'linux':
+      default:
+        return path.join(os.homedir(), '.config', earlyAppName);
+    }
+  }
+  const earlySettingsPath = path.join(earlyAppDataPath(), 'settings.json');
+  if (fs.existsSync(earlySettingsPath)) {
+    const raw = fs.readFileSync(earlySettingsPath, 'utf8');
+    const cfg = JSON.parse(raw || '{}');
+    if (cfg && cfg.url && typeof cfg.url === 'string') {
+      const u = cfg.url.startsWith('http') ? cfg.url : `https://${cfg.url}`;
+      try {
+        const parsed = new URL(u);
+        const isHttp = parsed.protocol === 'http:';
+        const isLocalhost = parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1';
+        if (isHttp && !isLocalhost) {
+          const origin = `${parsed.protocol}//${parsed.host}`;
+          app.commandLine.appendSwitch('unsafely-treat-insecure-origin-as-secure', origin);
+          app.commandLine.appendSwitch('allow-running-insecure-content');
+          console.log(`[Early Config] Treating insecure origin as secure for media: ${origin}`);
+        }
+      } catch (_) {}
+    }
+  }
+} catch (e) {
+  console.log('[Early Config] Failed processing insecure origin allowance:', e.message);
+}
+
 // Function to enable camera access on Linux
 function enableCameraAccess(browserWindow) {
   // Check if we're on Linux
@@ -97,6 +170,8 @@ if (!gotTheLock) {
 
 let mainWindow, browserWindow;
 let refreshTimer = null;
+let lastFailedUrl = null; // store last failed URL cross-platform
+let diagnosticsWindow = null;
 
 function createMainWindow() {
   mainWindow = new BrowserWindow({
@@ -184,10 +259,8 @@ function createBrowserWindow(url, isKiosk, isFullscreen, refreshMinutes, network
   browserWindow.loadURL(url).catch(err => {
     console.error('Failed to load URL:', err);
     
-    // Store the original URL in a session variable so we can access it from error.html
-    if (browserWindow && !browserWindow.isDestroyed()) {
-      browserWindow.webContents.session.setStorageItem('failedUrl', url);
-    }
+    // Store the original URL in memory so we can access it from error.html
+    lastFailedUrl = url;
     
     browserWindow.loadFile(path.join(__dirname, 'error.html'));
     
@@ -239,6 +312,49 @@ function createBrowserWindow(url, isKiosk, isFullscreen, refreshMinutes, network
   } else {
     console.log('Network status monitoring is disabled');
   }
+}
+
+function createDiagnosticsWindow() {
+  if (diagnosticsWindow && !diagnosticsWindow.isDestroyed()) {
+    diagnosticsWindow.focus();
+    return;
+  }
+
+  diagnosticsWindow = new BrowserWindow({
+    width: 900,
+    height: 700,
+    title: 'Camera Diagnostics',
+    icon: path.join(__dirname, '..', 'icons', 'icon.png'),
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      nodeIntegration: false,
+      contextIsolation: true,
+      webSecurity: true
+    }
+  });
+
+  // Ensure media permissions are allowed
+  diagnosticsWindow.webContents.session.setPermissionRequestHandler((webContents, permission, callback) => {
+    if (permission === 'media' || permission === 'camera' || permission === 'microphone') {
+      console.log(`[Diagnostics] Granting ${permission} permission`);
+      callback(true);
+    } else {
+      callback(false);
+    }
+  });
+
+  diagnosticsWindow.on('closed', () => {
+    diagnosticsWindow = null;
+  });
+
+  diagnosticsWindow.webContents.on('media-started-playing', () => {
+    console.log('[Diagnostics] Media started playing');
+  });
+  diagnosticsWindow.webContents.on('media-paused', () => {
+    console.log('[Diagnostics] Media paused');
+  });
+
+  diagnosticsWindow.loadFile(path.join(__dirname, 'camera.html'));
 }
 
 // Function to monitor network connectivity with the target URL
@@ -664,9 +780,7 @@ ipcMain.handle('get-failed-url', async (event) => {
   }
   
   try {
-    // Retrieve the failed URL from session storage
-    const failedUrl = await browserWindow.webContents.session.getStorageItem('failedUrl');
-    return failedUrl || null;
+    return lastFailedUrl || null;
   } catch (error) {
     console.error('Error getting failed URL:', error);
     return null;
@@ -679,20 +793,13 @@ ipcMain.on('retry-url', (event) => {
     return;
   }
   
-  // Attempt to retrieve the failed URL
-  browserWindow.webContents.session.getStorageItem('failedUrl')
-    .then(failedUrl => {
-      if (failedUrl) {
-        console.log('Retrying connection to URL:', failedUrl);
-        browserWindow.loadURL(failedUrl).catch(err => {
-          console.error('Failed to load URL again:', err);
-          // No need to reload error.html as we're already there
-        });
-      }
-    })
-    .catch(error => {
-      console.error('Error retrieving failed URL for retry:', error);
+  if (lastFailedUrl) {
+    console.log('Retrying connection to URL:', lastFailedUrl);
+    browserWindow.loadURL(lastFailedUrl).catch(err => {
+      console.error('Failed to load URL again:', err);
+      // No need to reload error.html as we're already there
     });
+  }
 });
 
 // Enhanced camera/microphone permissions handler
@@ -708,4 +815,23 @@ app.on('web-contents-created', (event, contents) => {
       }
     });
   }
+
+  // Log permission checks on Linux for diagnostics
+  if (process.platform === 'linux') {
+    try {
+      contents.session.setPermissionCheckHandler((webContents, permission, requestingOrigin, details) => {
+        const url = details && details.securityOrigin ? details.securityOrigin : requestingOrigin;
+        const result = permission === 'media' || permission === 'camera' || permission === 'microphone';
+        console.log(`[Linux Permissions] Check: permission=${permission} origin=${url} allow=${result}`);
+        return result;
+      });
+    } catch (e) {
+      console.log('[Linux Permissions] setPermissionCheckHandler not available:', e.message);
+    }
+  }
+});
+
+// IPC to open diagnostics window
+ipcMain.on('open-camera-diagnostics', () => {
+  createDiagnosticsWindow();
 });
