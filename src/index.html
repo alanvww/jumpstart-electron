@@ -30,6 +30,20 @@
           Fullscreen Mode (disabled when kiosk mode is on)
         </label>
       </div>
+
+      <div class="form-group">
+        <label for="preventSleep">
+          <input type="checkbox" id="preventSleep"> 
+          Prevent Sleep (Keep screen on)
+        </label>
+      </div>
+
+      <div class="form-group">
+        <label for="hideCursor">
+          <input type="checkbox" id="hideCursor"> 
+          Hide Cursor
+        </label>
+      </div>
       
       <div class="form-group">
         <label for="startup">
@@ -78,6 +92,8 @@
           document.getElementById('url').value = settings.url || 'https://google.com';
           document.getElementById('kiosk').checked = settings.kiosk || false;
           document.getElementById('fullscreen').checked = settings.fullscreen || false;
+          document.getElementById('preventSleep').checked = settings.preventSleep || false;
+          document.getElementById('hideCursor').checked = settings.hideCursor || false;
           document.getElementById('startup').checked = settings.startup || false;
           document.getElementById('refreshMinutes').value = settings.refreshMinutes || 0;
           
@@ -112,6 +128,8 @@
         url: url,
         kiosk: document.getElementById('kiosk').checked,
         fullscreen: document.getElementById('fullscreen').checked,
+        preventSleep: document.getElementById('preventSleep').checked,
+        hideCursor: document.getElementById('hideCursor').checked,
         startup: document.getElementById('startup').checked,
         refreshMinutes: refreshMinutes,
         networkRefresh: document.getElementById('networkRefresh').checked

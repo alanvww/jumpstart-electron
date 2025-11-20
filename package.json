@@ -9,6 +9,7 @@
     "build:win": "electron-builder --win portable",
     "build:mac": "electron-builder --mac",
     "build:linux": "electron-builder --linux",
+    "build:pi": "electron-builder --linux --armv7l --arm64",
     "build:all": "electron-builder -mwl"
   },
   "author": {
@@ -54,9 +55,18 @@
     },
     "linux": {
       "target": [
-        "AppImage",
-        "deb",
-        "rpm"
+        {
+          "target": "AppImage",
+          "arch": ["x64", "arm64", "armv7l"]
+        },
+        {
+          "target": "deb",
+          "arch": ["x64", "arm64", "armv7l"]
+        },
+        {
+          "target": "rpm",
+          "arch": ["x64", "arm64", "armv7l"]
+        }
       ],
       "category": "Utility",
       "icon": "icons/icon.png"

@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain } = require('electron');
+const { app, BrowserWindow, ipcMain, powerSaveBlocker } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
@@ -7,6 +7,7 @@ const net = require('net');
 
 // In-memory storage for last failed URL
 let lastFailedUrl = null;
+let powerSaveBlockerId = null;
 
 // Ensure only one instance of the app runs
 console.log('Requesting single instance lock...');
@@ -53,7 +54,21 @@ function createMainWindow() {
   mainWindow.loadFile(path.join(__dirname, 'index.html'));
 }
 
-function createBrowserWindow(url, isKiosk, isFullscreen, refreshMinutes, networkRefresh) {
+function createBrowserWindow(url, isKiosk, isFullscreen, refreshMinutes, networkRefresh, preventSleep, hideCursor) {
+  // Handle Prevent Sleep
+  if (preventSleep) {
+    if (powerSaveBlockerId === null) {
+      powerSaveBlockerId = powerSaveBlocker.start('prevent-display-sleep');
+      console.log('Prevent Sleep enabled, ID:', powerSaveBlockerId);
+    }
+  } else {
+    if (powerSaveBlockerId !== null) {
+      powerSaveBlocker.stop(powerSaveBlockerId);
+      console.log('Prevent Sleep disabled, ID:', powerSaveBlockerId);
+      powerSaveBlockerId = null;
+    }
+  }
+
   // Create browser window with initial size
   browserWindow = new BrowserWindow({
     width: 1024,
@@ -91,6 +106,14 @@ function createBrowserWindow(url, isKiosk, isFullscreen, refreshMinutes, network
       clearInterval(refreshTimer);
       refreshTimer = null;
     }
+
+    // Stop power save blocker if active
+    if (powerSaveBlockerId !== null) {
+      powerSaveBlocker.stop(powerSaveBlockerId);
+      console.log('Browser closed, Prevent Sleep disabled, ID:', powerSaveBlockerId);
+      powerSaveBlockerId = null;
+    }
+
     createMainWindow(); // Show settings page when browser is closed
   });
 
@@ -104,6 +127,12 @@ function createBrowserWindow(url, isKiosk, isFullscreen, refreshMinutes, network
     } else if (isFullscreen) {
       browserWindow.setFullScreen(true);
     }
+    
+    // Hide cursor if requested
+    if (hideCursor) {
+      browserWindow.webContents.insertCSS('html, body { cursor: none !important; }');
+    }
+    
     browserWindow.show();
   });
 
@@ -351,7 +380,7 @@ app.whenReady().then(() => {
       validUrl = 'https://' + validUrl;
     }
     console.log('Opening browser window with URL:', validUrl);
-    createBrowserWindow(validUrl, settings.kiosk, settings.fullscreen, settings.refreshMinutes, settings.networkRefresh);
+    createBrowserWindow(validUrl, settings.kiosk, settings.fullscreen, settings.refreshMinutes, settings.networkRefresh, settings.preventSleep, settings.hideCursor);
   } else {
     console.log('No saved URL found, showing settings page');
     // No saved URL, show settings page
@@ -367,7 +396,7 @@ app.whenReady().then(() => {
         if (!validUrl.startsWith('http://') && !validUrl.startsWith('https://')) {
           validUrl = 'https://' + validUrl;
         }
-        createBrowserWindow(validUrl, settings.kiosk, settings.fullscreen, settings.refreshMinutes, settings.networkRefresh);
+        createBrowserWindow(validUrl, settings.kiosk, settings.fullscreen, settings.refreshMinutes, settings.networkRefresh, settings.preventSleep, settings.hideCursor);
       } else {
         createMainWindow();
       }
@@ -415,6 +444,7 @@ function configureAutoStart(enable) {
   switch (process.platform) {
     case 'win32':
       // Windows: Create shortcut in startup folder
+      // This is useful for portable apps that don't use the installer
       const { execSync } = require('child_process');
       const startupFolderPath = path.join(process.env.APPDATA, 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Startup');
       const shortcutPath = path.join(startupFolderPath, `${appName}.lnk`);
@@ -422,15 +452,17 @@ function configureAutoStart(enable) {
       if (enable) {
         // Create Windows shortcut using PowerShell
         try {
-          const powershellCommand = `
+          // Check if file exists first to avoid error
+          if (!fs.existsSync(shortcutPath)) {
+             const powershellCommand = `
             $WshShell = New-Object -ComObject WScript.Shell
             $Shortcut = $WshShell.CreateShortcut("${shortcutPath.replace(/\\/g, '\\\\')}")
             $Shortcut.TargetPath = "${appPath.replace(/\\/g, '\\\\')}"
             $Shortcut.Save()
           `;
-
-          execSync(`powershell -command "${powershellCommand}"`, { windowsHide: true });
-          console.log(`Created startup shortcut at: ${shortcutPath}`);
+             execSync(`powershell -command "${powershellCommand}"`, { windowsHide: true });
+             console.log(`Created startup shortcut at: ${shortcutPath}`);
+          }
         } catch (error) {
           console.error('Failed to create startup shortcut:', error);
         }
@@ -448,7 +480,10 @@ function configureAutoStart(enable) {
       break;
 
     case 'darwin':
-      // macOS: Use Launch Agents
+      // macOS: Use Electron's API primarily, but custom plist can be a fallback if needed.
+      // Since app.setLoginItemSettings works well on macOS, we can skip custom plist 
+      // unless specifically required. The previous implementation forced it.
+      // We will leave it as is for now to ensure "full support" as requested.
       const plistPath = path.join(os.homedir(), 'Library', 'LaunchAgents', `com.${appName}.plist`);
 
       if (enable) {
@@ -507,22 +542,41 @@ ipcMain.on('save-settings', (event, settings) => {
   console.log('Saving settings:', settings);
 
   // Destructure settings
-  const { url, kiosk, fullscreen, startup, refreshMinutes, networkRefresh } = settings;
+  const { url, kiosk, fullscreen, startup, refreshMinutes, networkRefresh, preventSleep, hideCursor } = settings;
 
   // Save settings to file
   saveSettings(settings);
 
   // Configure auto-start based on platform
   try {
-    // Use Electron's built-in method for development
-    app.setLoginItemSettings({ openAtLogin: startup });
+    // Use Electron's built-in method for all platforms
+    // It handles Windows registry and macOS Login Items consistently
+    // Linux support varies by desktop environment but often works for basic cases
+    // If customized behavior is needed, platform-specific code can override this
+    app.setLoginItemSettings({
+      openAtLogin: startup,
+      path: app.getPath('exe'),
+      name: 'Jumpstart'
+    });
 
-    // For production builds, use platform-specific methods
-    if (!app.isPackaged) {
-      console.log('Using Electron login item settings for development');
-    } else {
-      configureAutoStart(startup);
+    console.log(`Electron login item settings updated: openAtLogin=${startup}`);
+
+    // For Linux specifically, we might still want the custom .desktop file approach
+    // as setLoginItemSettings support on Linux is desktop-environment dependent
+    if (process.platform === 'linux' && app.isPackaged) {
+        configureAutoStart(startup);
     }
+    
+    // If we are on Windows and using portable build, registry keys might not persist cleanly 
+    // or we might want a shortcut in the Startup folder instead. 
+    // The user asked to keep portable tag, implying portable usage.
+    // Portable apps often don't install registry keys well.
+    // Let's keep the custom shortcut creation for Windows as a fallback/enhancement 
+    // especially since we are supporting 'portable'.
+    if (process.platform === 'win32' && app.isPackaged) {
+       configureAutoStart(startup);
+    }
+
   } catch (error) {
     console.error('Failed to set startup settings:', error);
   }
@@ -548,7 +602,7 @@ ipcMain.on('save-settings', (event, settings) => {
   }
 
   // Pass all settings to browser window creation
-  createBrowserWindow(validUrl, kiosk, fullscreen, refreshMinutes, networkRefresh);
+  createBrowserWindow(validUrl, kiosk, fullscreen, refreshMinutes, networkRefresh, preventSleep, hideCursor);
 
   // Log the configured settings for debugging
   console.log('Browser configured with settings:', {
@@ -557,7 +611,9 @@ ipcMain.on('save-settings', (event, settings) => {
     fullscreen,
     startup,
     refreshMinutes,
-    networkRefresh
+    networkRefresh,
+    preventSleep,
+    hideCursor
   });
 });
 
