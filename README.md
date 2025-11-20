@@ -151,7 +151,7 @@ You can customize the build configuration in the `build` section of `package.jso
 
 If you want to contribute to Jumpstart or build it from source, follow these steps:
 
-1. Make sure you have [Node.js](https://nodejs.org/) installed (version 14 or higher recommended)
+1. Make sure you have [Node.js](https://nodejs.org/) installed (version 18 or higher recommended)
 
 2. Clone this repository:
 
