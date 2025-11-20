@@ -135,47 +135,6 @@
     <p class="shortcut-hint">You can also press Ctrl+Shift+Q to return to settings</p>
   </div>
 
-  <script>
-    let failedUrl = "";
-    
-    // Get the failed URL from the main process using the getFailedUrl API
-    window.electronAPI.getFailedUrl().then(url => {
-      if (url) {
-        failedUrl = url;
-        console.log("Retrieved failed URL:", failedUrl);
-        
-        // Check if URL is localhost
-        const isLocalhost = failedUrl.includes('localhost:') || failedUrl.includes('127.0.0.1:');
-        
-        // Update message based on URL type
-        if (!isLocalhost) {
-          document.getElementById('localhost-message').textContent = 
-            "The app will automatically reload when the network connection is restored.";
-        }
-      } else {
-        console.log("No failed URL was retrieved");
-      }
-    }).catch(err => {
-      console.error("Error retrieving failed URL:", err);
-    });
-    
-    // Update retry button to use the retryUrl API
-    document.getElementById('retry-btn').addEventListener('click', () => {
-      console.log("Retrying URL");
-      window.electronAPI.retryUrl();
-    });
-    
-    // Back button
-    document.getElementById('back-btn').addEventListener('click', () => {
-      window.electronAPI.exitKiosk();
-    });
-    
-    // Also allow Escape key to return to settings
-    document.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape') {
-        window.electronAPI.exitKiosk();
-      }
-    });
-  </script>
+  <script src="error-renderer.js"></script>
 </body>
 </html>

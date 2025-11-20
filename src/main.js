@@ -322,7 +322,7 @@ function monitorNetworkStatus(window, targetUrl) {
           setTimeout(() => {
             if (window && !window.isDestroyed()) {
               console.log(`Executing page refresh after localhost port ${port} became available`);
-              window.reloadIgnoringCache();
+              window.webContents.reloadIgnoringCache();
             }
           }, 2000);
         }
@@ -338,7 +338,7 @@ function monitorNetworkStatus(window, targetUrl) {
           setTimeout(() => {
             if (window && !window.isDestroyed()) {
               console.log('Executing page refresh after network reconnection');
-              window.reloadIgnoringCache();
+              window.webContents.reloadIgnoringCache();
             }
           }, 3000);
         }
@@ -667,7 +667,7 @@ app.on('web-contents-created', (event, contents) => {
 
   contents.on('render-process-gone', (e, details) => {
     console.error('Renderer process gone:', details);
-    if (browserWindow && !browserWindow.isDestroyed()) {
+    if (contents === browserWindow?.webContents && !browserWindow.isDestroyed()) {
       browserWindow.loadFile(path.join(__dirname, 'error.html'));
     }
   });
