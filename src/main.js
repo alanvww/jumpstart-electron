@@ -1,12 +1,57 @@
-const { app, BrowserWindow, ipcMain, session, dialog } = require('electron');
+const { app, BrowserWindow, ipcMain } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
 const { exec } = require('child_process');
 const net = require('net');
 
+const MEDIA_PERMISSIONS = new Set(['media', 'camera', 'microphone']);
+
+function getOriginFromUrl(rawUrl) {
+  try {
+    return new URL(rawUrl).origin;
+  } catch (error) {
+    return null;
+  }
+}
+
+function setMediaPermissionHandler(electronSession, trustedOrigin) {
+  electronSession.setPermissionRequestHandler((webContents, permission, callback, details) => {
+    if (!MEDIA_PERMISSIONS.has(permission)) {
+      callback(false);
+      return;
+    }
+
+    const requestingUrl = details?.requestingUrl || details?.embeddingOrigin || webContents.getURL();
+    const requestingOrigin = getOriginFromUrl(requestingUrl);
+    const shouldAllow = Boolean(trustedOrigin && requestingOrigin === trustedOrigin);
+
+    if (!shouldAllow) {
+      console.log(`Denying ${permission} permission for origin: ${requestingOrigin || 'unknown'}`);
+      callback(false);
+      return;
+    }
+
+    console.log(`Allowing ${permission} permission for trusted origin: ${requestingOrigin}`);
+    callback(true);
+  });
+}
+
+function setupLinuxCameraPermissions() {
+  if (process.platform !== 'linux') {
+    return;
+  }
+
+  try {
+    app.commandLine.appendSwitch('enable-features', 'WebRTCPipeWireCapturer');
+    console.log('Enabled Linux WebRTC camera compatibility flags');
+  } catch (error) {
+    console.error('Failed to configure Linux camera compatibility flags:', error);
+  }
+}
+
 // Function to enable camera access on Linux
-function enableCameraAccess(browserWindow) {
+function enableCameraAccess(browserWindow, trustedOrigin) {
   // Check if we're on Linux
   if (process.platform === 'linux') {
     console.log('Setting up additional camera access for Linux');
@@ -15,11 +60,16 @@ function enableCameraAccess(browserWindow) {
     browserWindow.webContents.session.webRequest.onHeadersReceived(
       { urls: ['*://*/*'] },
       (details, callback) => {
+        const requestOrigin = getOriginFromUrl(details.url);
+        if (!trustedOrigin || requestOrigin !== trustedOrigin) {
+          callback({ responseHeaders: details.responseHeaders });
+          return;
+        }
+
         callback({
           responseHeaders: {
             ...details.responseHeaders,
-            'Feature-Policy': ['camera *', 'microphone *'],
-            'Permissions-Policy': ['camera=*, microphone=*']
+            'Permissions-Policy': ['camera=(self), microphone=(self)']
           }
         });
       }
@@ -83,11 +133,11 @@ if (!gotTheLock) {
   app.on('second-instance', (event, commandLine, workingDirectory) => {
     console.log('Second instance detected, focusing existing window');
     // Someone tried to run a second instance, focus our window instead
-    if (mainWindow) {
+    if (mainWindow && !mainWindow.isDestroyed()) {
       console.log('Focusing main window');
       if (mainWindow.isMinimized()) mainWindow.restore();
       mainWindow.focus();
-    } else if (browserWindow) {
+    } else if (browserWindow && !browserWindow.isDestroyed()) {
       console.log('Focusing browser window');
       if (browserWindow.isMinimized()) browserWindow.restore();
       browserWindow.focus();
@@ -97,6 +147,7 @@ if (!gotTheLock) {
 
 let mainWindow, browserWindow;
 let refreshTimer = null;
+let failedUrl = null;
 
 function createMainWindow() {
   mainWindow = new BrowserWindow({
@@ -109,6 +160,11 @@ function createMainWindow() {
       contextIsolation: true
     }
   });
+
+  mainWindow.on('closed', () => {
+    mainWindow = null;
+  });
+
   mainWindow.loadFile(path.join(__dirname, 'index.html'));
 }
 
@@ -127,20 +183,13 @@ function createBrowserWindow(url, isKiosk, isFullscreen, refreshMinutes, network
     }
   });
 
+  const trustedOrigin = getOriginFromUrl(url);
+  setMediaPermissionHandler(browserWindow.webContents.session, trustedOrigin);
+
   // Explicitly enable camera access for Linux
   if (process.platform === 'linux') {
-    // Set specific webPreferences for media access
-    browserWindow.webContents.session.setPermissionRequestHandler((webContents, permission, callback) => {
-      if (permission === 'media' || permission === 'camera' || permission === 'microphone') {
-        console.log(`Granting ${permission} permission on Linux`);
-        callback(true);
-      } else {
-        callback(false);
-      }
-    });
-
     // Enable camera specific features
-    enableCameraAccess(browserWindow);
+    enableCameraAccess(browserWindow, trustedOrigin);
   }
 
   // Set up event to show settings page when browser window is closed
@@ -181,39 +230,17 @@ function createBrowserWindow(url, isKiosk, isFullscreen, refreshMinutes, network
   });
 
   // Load the URL directly
+  failedUrl = null;
   browserWindow.loadURL(url).catch(err => {
     console.error('Failed to load URL:', err);
-    
-    // Store the original URL in a session variable so we can access it from error.html
-    if (browserWindow && !browserWindow.isDestroyed()) {
-      browserWindow.webContents.session.setStorageItem('failedUrl', url);
-    }
-    
-    browserWindow.loadFile(path.join(__dirname, 'error.html'));
-    
-    // Even when loading error.html, continue to monitor the original URL
-    // This way we can reload when it becomes available
-    if (networkRefresh) {
-      console.log('Setting up network monitoring for unavailable URL:', url);
-      monitorNetworkStatus(browserWindow, url);
-    }
-  });
 
-  // Additional camera access setup for Linux after page loads
-  if (process.platform === 'linux') {
-    browserWindow.webContents.on('did-finish-load', () => {
-      console.log('Page loaded, ensuring camera access on Linux');
-      // This forces camera permissions to be granted again
-      browserWindow.webContents.session.setPermissionRequestHandler((webContents, permission, callback) => {
-        if (permission === 'media' || permission === 'camera' || permission === 'microphone') {
-          console.log(`Re-granting ${permission} permission after page load`);
-          callback(true);
-        } else {
-          callback(false);
-        }
-      });
-    });
-  }
+    // Store the original URL so we can access it from error.html
+    if (browserWindow && !browserWindow.isDestroyed()) {
+      failedUrl = url;
+    }
+
+    browserWindow.loadFile(path.join(__dirname, 'error.html'));
+  });
 
   // Set up auto-refresh timer if enabled
   if (refreshMinutes && refreshMinutes > 0) {
@@ -543,9 +570,14 @@ function configureAutoStart(enable) {
 
     case 'darwin':
       // macOS: Use Launch Agents
-      const plistPath = path.join(os.homedir(), 'Library', 'LaunchAgents', `com.${appName}.plist`);
+      const launchAgentsDir = path.join(os.homedir(), 'Library', 'LaunchAgents');
+      const plistPath = path.join(launchAgentsDir, `com.${appName}.plist`);
 
       if (enable) {
+        if (!fs.existsSync(launchAgentsDir)) {
+          fs.mkdirSync(launchAgentsDir, { recursive: true });
+        }
+
         const plistContent = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -561,10 +593,10 @@ function configureAutoStart(enable) {
 </dict>
 </plist>`;
         fs.writeFileSync(plistPath, plistContent);
-        exec(`launchctl load ${plistPath}`);
+        exec(`launchctl load "${plistPath}"`);
       } else {
         if (fs.existsSync(plistPath)) {
-          exec(`launchctl unload ${plistPath}`);
+          exec(`launchctl unload "${plistPath}"`);
           fs.unlinkSync(plistPath);
         }
       }
@@ -580,9 +612,11 @@ function configureAutoStart(enable) {
           fs.mkdirSync(autoStartDir, { recursive: true });
         }
 
+        const escapedAppPath = appPath.replace(/"/g, '\\"');
+
         const desktopContent = `[Desktop Entry]
 Type=Application
-Exec=${appPath}
+Exec="${escapedAppPath}"
 Hidden=false
 NoDisplay=false
 X-GNOME-Autostart-enabled=true
@@ -600,11 +634,37 @@ Name=${appName}`;
 ipcMain.on('save-settings', (event, settings) => {
   console.log('Saving settings:', settings);
 
-  // Destructure settings
-  const { url, kiosk, fullscreen, startup, refreshMinutes, networkRefresh } = settings;
+  if (!settings || typeof settings !== 'object') {
+    console.error('Invalid settings payload: expected an object');
+    return;
+  }
+
+  const rawUrl = typeof settings.url === 'string' ? settings.url.trim() : '';
+  if (!rawUrl) {
+    console.error('Invalid settings payload: URL is required');
+    return;
+  }
+
+  const kiosk = Boolean(settings.kiosk);
+  const fullscreen = !kiosk && Boolean(settings.fullscreen);
+  const startup = Boolean(settings.startup);
+  const refreshMinutesNumber = Number(settings.refreshMinutes);
+  const refreshMinutes = Number.isFinite(refreshMinutesNumber)
+    ? Math.max(0, Math.floor(refreshMinutesNumber))
+    : 0;
+  const networkRefresh = Boolean(settings.networkRefresh);
+
+  const normalizedSettings = {
+    url: rawUrl,
+    kiosk,
+    fullscreen,
+    startup,
+    refreshMinutes,
+    networkRefresh
+  };
 
   // Save settings to file
-  saveSettings(settings);
+  saveSettings(normalizedSettings);
 
   // Configure auto-start based on platform
   try {
@@ -622,9 +682,9 @@ ipcMain.on('save-settings', (event, settings) => {
   }
 
   // Make sure URL has http:// or https:// prefix
-  let validUrl = url;
-  if (!url.startsWith('http://') && !url.startsWith('https://')) {
-    validUrl = 'https://' + url;
+  let validUrl = rawUrl;
+  if (!rawUrl.startsWith('http://') && !rawUrl.startsWith('https://')) {
+    validUrl = 'https://' + rawUrl;
   }
 
   if (mainWindow) {
@@ -659,53 +719,22 @@ ipcMain.on('get-settings', (event) => {
 
 // Handle get-failed-url request from renderer (used in error.html)
 ipcMain.handle('get-failed-url', async (event) => {
-  if (!browserWindow || browserWindow.isDestroyed()) {
-    return null;
-  }
-  
-  try {
-    // Retrieve the failed URL from session storage
-    const failedUrl = await browserWindow.webContents.session.getStorageItem('failedUrl');
-    return failedUrl || null;
-  } catch (error) {
-    console.error('Error getting failed URL:', error);
-    return null;
-  }
+  return failedUrl;
 });
 
 // Handle retry-url request from renderer (used in error.html)
 ipcMain.on('retry-url', (event) => {
-  if (!browserWindow || browserWindow.isDestroyed()) {
+  if (!browserWindow || browserWindow.isDestroyed() || !failedUrl) {
     return;
   }
-  
-  // Attempt to retrieve the failed URL
-  browserWindow.webContents.session.getStorageItem('failedUrl')
-    .then(failedUrl => {
-      if (failedUrl) {
-        console.log('Retrying connection to URL:', failedUrl);
-        browserWindow.loadURL(failedUrl).catch(err => {
-          console.error('Failed to load URL again:', err);
-          // No need to reload error.html as we're already there
-        });
-      }
-    })
-    .catch(error => {
-      console.error('Error retrieving failed URL for retry:', error);
-    });
-});
 
-// Enhanced camera/microphone permissions handler
-app.on('web-contents-created', (event, contents) => {
-  // For non-Linux platforms
-  if (process.platform !== 'linux') {
-    contents.session.setPermissionRequestHandler((webContents, permission, callback) => {
-      if (permission === 'media' || permission === 'camera' || permission === 'microphone') {
-        console.log(`Allowing ${permission} permission on non-Linux platform`);
-        callback(true);
-      } else {
-        callback(false);
-      }
+  const urlToRetry = failedUrl;
+  console.log('Retrying connection to URL:', urlToRetry);
+  browserWindow.loadURL(urlToRetry)
+    .then(() => {
+      failedUrl = null;
+    })
+    .catch(err => {
+      console.error('Failed to load URL again:', err);
     });
-  }
 });

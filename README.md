@@ -94,7 +94,7 @@ A simple cross-platform Electron wrapper lets you open any URL in a dedicated wi
 
 The application supports starting automatically with the system on all major platforms:
 
-- **Windows**: Uses the Windows Registry to configure auto-start
+- **Windows**: Creates a shortcut in the user's Startup folder
 - **macOS**: Creates a Launch Agent in the user's Library folder
 - **Linux**: Creates a .desktop file in the autostart directory
 
