@@ -107,21 +107,21 @@ The application can be built for Windows, macOS, and Linux using electron-builde
 Build for all platforms (requires appropriate environment):
 
 ```
-npm run build:all
+bun run build:all
 ```
 
 Build for specific platforms:
 
 ```
-npm run build:win   # Windows
-npm run build:mac   # macOS
-npm run build:linux # Linux
+bun run build:win   # Windows
+bun run build:mac   # macOS
+bun run build:linux # Linux
 ```
 
 Or just build for the current platform:
 
 ```
-npm run build
+bun run build
 ```
 
 #### Build Outputs
@@ -151,7 +151,7 @@ You can customize the build configuration in the `build` section of `package.jso
 
 If you want to contribute to Jumpstart or build it from source, follow these steps:
 
-1. Make sure you have [Node.js](https://nodejs.org/) installed (version 14 or higher recommended)
+1. Make sure you have [Node.js](https://nodejs.org/) (v24 LTS) and [Bun](https://bun.sh/) installed
 
 2. Clone this repository:
 
@@ -163,13 +163,13 @@ If you want to contribute to Jumpstart or build it from source, follow these ste
 3. Install dependencies:
 
    ```
-   npm install
+   bun install
    ```
 
 4. Start the application in development mode:
 
    ```
-   npm start
+   bun start
    ```
 
 5. Make your changes and test them
