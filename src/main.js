@@ -5,9 +5,69 @@ const os = require('os');
 const { exec } = require('child_process');
 const net = require('net');
 
+const APP_NAME = 'Jumpstart';
+const APP_ICON_PATH = path.join(__dirname, '..', 'icons', 'icon.png');
+const MEDIA_PERMISSIONS = new Set(['media', 'camera', 'microphone']);
+
+app.setName(APP_NAME);
+
 // In-memory storage for last failed URL
 let lastFailedUrl = null;
 let powerSaveBlockerId = null;
+
+// Parse the origin (scheme + host + port) from a URL, or null if unparseable.
+function getOriginFromUrl(rawUrl) {
+  try {
+    return new URL(rawUrl).origin;
+  } catch (_) {
+    return null;
+  }
+}
+
+// Enable PipeWire-based WebRTC capture on Linux/Wayland (Raspberry Pi OS Bookworm,
+// modern Ubuntu). Command-line switches must be appended BEFORE the app 'ready'
+// event, so this runs at module load — not inside whenReady().
+function setupLinuxCameraPermissions() {
+  if (process.platform !== 'linux') {
+    return;
+  }
+  try {
+    app.commandLine.appendSwitch('enable-features', 'WebRTCPipeWireCapturer');
+    console.log('Enabled Linux WebRTC camera compatibility flags');
+  } catch (error) {
+    console.error('Failed to configure Linux camera compatibility flags:', error);
+  }
+}
+
+setupLinuxCameraPermissions();
+
+// Prevent-sleep: powerSaveBlocker alone is a no-op on many Linux/Pi kiosk sessions
+// (its D-Bus inhibitors are often absent), so also disable X11 screen blanking / DPMS
+// as a best-effort fallback. On Wayland, disable blanking via raspi-config (see README).
+function startPreventSleep() {
+  if (powerSaveBlockerId === null) {
+    powerSaveBlockerId = powerSaveBlocker.start('prevent-display-sleep');
+    console.log('Prevent Sleep enabled, ID:', powerSaveBlockerId);
+  }
+  if (process.platform === 'linux') {
+    exec('xset s off -dpms', (err) => {
+      if (err) console.log('xset screen-blanking disable unavailable:', err.message);
+    });
+  }
+}
+
+function stopPreventSleep() {
+  if (powerSaveBlockerId !== null) {
+    powerSaveBlocker.stop(powerSaveBlockerId);
+    console.log('Prevent Sleep disabled, ID:', powerSaveBlockerId);
+    powerSaveBlockerId = null;
+  }
+  if (process.platform === 'linux') {
+    exec('xset s on +dpms', (err) => {
+      if (err) console.log('xset screen-blanking restore unavailable:', err.message);
+    });
+  }
+}
 
 // Ensure only one instance of the app runs
 console.log('Requesting single instance lock...');
@@ -23,11 +83,11 @@ if (!gotTheLock) {
   app.on('second-instance', (event, commandLine, workingDirectory) => {
     console.log('Second instance detected, focusing existing window');
     // Someone tried to run a second instance, focus our window instead
-    if (mainWindow) {
+    if (mainWindow && !mainWindow.isDestroyed()) {
       console.log('Focusing main window');
       if (mainWindow.isMinimized()) mainWindow.restore();
       mainWindow.focus();
-    } else if (browserWindow) {
+    } else if (browserWindow && !browserWindow.isDestroyed()) {
       console.log('Focusing browser window');
       if (browserWindow.isMinimized()) browserWindow.restore();
       browserWindow.focus();
@@ -42,7 +102,7 @@ function createMainWindow() {
   mainWindow = new BrowserWindow({
     width: 800,
     height: 600,
-    icon: path.join(__dirname, '..', 'icons', 'icon.png'),
+    icon: APP_ICON_PATH,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       nodeIntegration: false,
@@ -50,6 +110,11 @@ function createMainWindow() {
       sandbox: true,
       devTools: !app.isPackaged
     }
+  });
+  // Null the reference on close so stale-window checks elsewhere don't call
+  // methods on a destroyed BrowserWindow.
+  mainWindow.on('closed', () => {
+    mainWindow = null;
   });
   mainWindow.loadFile(path.join(__dirname, 'index.html'));
 }
@@ -57,26 +122,21 @@ function createMainWindow() {
 function createBrowserWindow(url, isKiosk, isFullscreen, refreshMinutes, networkRefresh, preventSleep, hideCursor) {
   // Handle Prevent Sleep
   if (preventSleep) {
-    if (powerSaveBlockerId === null) {
-      powerSaveBlockerId = powerSaveBlocker.start('prevent-display-sleep');
-      console.log('Prevent Sleep enabled, ID:', powerSaveBlockerId);
-    }
+    startPreventSleep();
   } else {
-    if (powerSaveBlockerId !== null) {
-      powerSaveBlocker.stop(powerSaveBlockerId);
-      console.log('Prevent Sleep disabled, ID:', powerSaveBlockerId);
-      powerSaveBlockerId = null;
-    }
+    stopPreventSleep();
   }
 
-  // Create browser window with initial size
+  // Create browser window with initial size. Uses a MINIMAL preload that does not
+  // expose saveSettings/loadSettings, so remote page content cannot persist settings
+  // or configure OS autostart.
   browserWindow = new BrowserWindow({
     width: 1024,
     height: 768,
     show: false, // Don't show until we're ready
-    icon: path.join(__dirname, '..', 'icons', 'icon.png'),
+    icon: APP_ICON_PATH,
     webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
+      preload: path.join(__dirname, 'preload-content.js'),
       nodeIntegration: false,
       contextIsolation: true,
       webSecurity: true,
@@ -84,6 +144,54 @@ function createBrowserWindow(url, isKiosk, isFullscreen, refreshMinutes, network
       devTools: !app.isPackaged
     }
   });
+
+  // Camera/mic are auto-granted only to the operator-configured origin. The trusted
+  // origin follows top-level (main-frame) navigations/redirects so that a www/https
+  // redirect of the configured site keeps working, while cross-origin iframes and
+  // unrelated origins are denied.
+  let trustedOrigin = getOriginFromUrl(url);
+  const contentSession = browserWindow.webContents.session;
+
+  const isTrustedMedia = (permission, requestingUrl) => {
+    if (!MEDIA_PERMISSIONS.has(permission)) return false;
+    const requestingOrigin = getOriginFromUrl(requestingUrl);
+    return Boolean(trustedOrigin && requestingOrigin === trustedOrigin);
+  };
+
+  contentSession.setPermissionRequestHandler((webContents, permission, callback, details) => {
+    const requestingUrl = (details && (details.requestingUrl || details.embeddingOrigin)) || webContents.getURL();
+    const allow = isTrustedMedia(permission, requestingUrl);
+    console.log(`${allow ? 'Allowing' : 'Denying'} ${permission} for origin: ${getOriginFromUrl(requestingUrl) || 'unknown'}`);
+    callback(allow);
+  });
+
+  contentSession.setPermissionCheckHandler((webContents, permission, requestingOrigin, details) => {
+    const requestingUrl = (details && details.requestingUrl) || requestingOrigin;
+    return isTrustedMedia(permission, requestingUrl);
+  });
+
+  browserWindow.webContents.on('did-navigate', (event, navigateUrl) => {
+    const origin = getOriginFromUrl(navigateUrl);
+    if (origin) trustedOrigin = origin;
+  });
+
+  // On Linux, add a Permissions-Policy header for the trusted origin so getUserMedia
+  // is allowed by the platform policy (helps Raspberry Pi camera setups).
+  if (process.platform === 'linux') {
+    contentSession.webRequest.onHeadersReceived({ urls: ['*://*/*'] }, (details, callback) => {
+      const requestOrigin = getOriginFromUrl(details.url);
+      if (!trustedOrigin || requestOrigin !== trustedOrigin) {
+        callback({ responseHeaders: details.responseHeaders });
+        return;
+      }
+      callback({
+        responseHeaders: {
+          ...details.responseHeaders,
+          'Permissions-Policy': ['camera=(self), microphone=(self)']
+        }
+      });
+    });
+  }
 
   // Harden navigation and popups
   browserWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
@@ -98,6 +206,16 @@ function createBrowserWindow(url, isKiosk, isFullscreen, refreshMinutes, network
     }
   });
 
+  // Recover from renderer crashes by showing the error page. Record the URL that was
+  // displayed so the error page's "Try Again" can retry it.
+  browserWindow.webContents.on('render-process-gone', (e, details) => {
+    console.error('Renderer process gone:', details);
+    if (browserWindow && !browserWindow.isDestroyed()) {
+      lastFailedUrl = browserWindow.webContents.getURL() || lastFailedUrl;
+      browserWindow.loadFile(path.join(__dirname, 'error.html'));
+    }
+  });
+
   // Set up event to show settings page when browser window is closed
   browserWindow.on('closed', () => {
     browserWindow = null;
@@ -106,14 +224,8 @@ function createBrowserWindow(url, isKiosk, isFullscreen, refreshMinutes, network
       clearInterval(refreshTimer);
       refreshTimer = null;
     }
-
-    // Stop power save blocker if active
-    if (powerSaveBlockerId !== null) {
-      powerSaveBlocker.stop(powerSaveBlockerId);
-      console.log('Browser closed, Prevent Sleep disabled, ID:', powerSaveBlockerId);
-      powerSaveBlockerId = null;
-    }
-
+    // Stop preventing sleep when the kiosk window closes
+    stopPreventSleep();
     createMainWindow(); // Show settings page when browser is closed
   });
 
@@ -127,14 +239,18 @@ function createBrowserWindow(url, isKiosk, isFullscreen, refreshMinutes, network
     } else if (isFullscreen) {
       browserWindow.setFullScreen(true);
     }
-    
-    // Hide cursor if requested
-    if (hideCursor) {
-      browserWindow.webContents.insertCSS('html, body { cursor: none !important; }');
-    }
-    
     browserWindow.show();
   });
+
+  // Hide the cursor on every load/navigation (CSS injected via insertCSS applies only
+  // to the current document, so re-apply after each load rather than once).
+  if (hideCursor) {
+    browserWindow.webContents.on('dom-ready', () => {
+      if (browserWindow && !browserWindow.isDestroyed()) {
+        browserWindow.webContents.insertCSS('html, body, * { cursor: none !important; }');
+      }
+    });
+  }
 
   // Register global shortcut for exiting kiosk mode
   const { globalShortcut } = require('electron');
@@ -154,19 +270,23 @@ function createBrowserWindow(url, isKiosk, isFullscreen, refreshMinutes, network
   });
 
   // Load the URL directly
+  lastFailedUrl = null;
   browserWindow.loadURL(url).catch(err => {
     console.error('Failed to load URL:', err);
+    if (!browserWindow || browserWindow.isDestroyed()) {
+      return;
+    }
     // Store the original URL in memory so we can access it from error.html
     lastFailedUrl = url;
-    
-    browserWindow.loadFile(path.join(__dirname, 'error.html'));
-    
-    // Even when loading error.html, continue to monitor the original URL
-    // This way we can reload when it becomes available
-    if (networkRefresh) {
-      console.log('Setting up network monitoring for unavailable URL:', url);
-      monitorNetworkStatus(browserWindow, url);
+
+    try {
+      browserWindow.loadFile(path.join(__dirname, 'error.html'));
+    } catch (loadErr) {
+      // Window may have been torn down between the guard and this call (e.g. on quit)
+      console.error('Failed to show error page:', loadErr.message);
     }
+    // Network monitoring is started unconditionally below (when enabled); the single
+    // monitor handles recovery whether or not the initial load succeeded.
   });
 
   // Set up auto-refresh timer if enabled
@@ -185,7 +305,8 @@ function createBrowserWindow(url, isKiosk, isFullscreen, refreshMinutes, network
     }, refreshInterval);
   }
 
-  // Set up network status monitoring if enabled
+  // Set up network status monitoring if enabled. Started exactly once here (the failed-
+  // load path no longer starts its own), so there is never a duplicate monitor.
   console.log('Network refresh setting:', networkRefresh);
   if (networkRefresh) {
     console.log('Enabling network status monitoring');
@@ -213,28 +334,40 @@ function monitorNetworkStatus(window, targetUrl) {
   }
 
   // Check if the URL is pointing to localhost
-  const isLocalhostUrl = parsedUrl.hostname === 'localhost' || 
+  const isLocalhostUrl = parsedUrl.hostname === 'localhost' ||
                         parsedUrl.hostname === '127.0.0.1' ||
                         parsedUrl.hostname === '::1';
-  
+
   // Extract port from URL
-  const port = parsedUrl.port ? parseInt(parsedUrl.port, 10) : 
+  const port = parsedUrl.port ? parseInt(parsedUrl.port, 10) :
               (parsedUrl.protocol === 'https:' ? 443 : 80);
 
   console.log(`URL analysis: ${parsedUrl.hostname}:${port} (Localhost URL: ${isLocalhostUrl})`);
+
+  // Re-navigate the window back to the target URL. After a failed initial load the
+  // window is showing error.html, so a plain reload would just re-render the error
+  // page — we must loadURL(targetUrl) to actually recover.
+  const recoverToTarget = () => {
+    if (window && !window.isDestroyed()) {
+      console.log(`Navigating back to target URL: ${targetUrl}`);
+      window.loadURL(targetUrl).catch(err => {
+        console.error('Recovery navigation failed:', err.message);
+      });
+    }
+  };
 
   // Function to check if a localhost port is available
   const checkLocalPort = (port) => {
     return new Promise((resolve) => {
       const socket = new net.Socket();
-      
+
       // Set a timeout for the connection attempt
       const timeout = setTimeout(() => {
         socket.destroy();
         console.log(`Port ${port} connection attempt timed out`);
         resolve(false);
       }, 1000);
-      
+
       // Attempt to connect to the port
       socket.connect(port, '127.0.0.1', () => {
         clearTimeout(timeout);
@@ -242,7 +375,7 @@ function monitorNetworkStatus(window, targetUrl) {
         console.log(`Successfully connected to port ${port}`);
         resolve(true);
       });
-      
+
       // Handle connection errors
       socket.on('error', (err) => {
         clearTimeout(timeout);
@@ -260,19 +393,20 @@ function monitorNetworkStatus(window, targetUrl) {
       console.log(`Testing localhost port ${port} availability...`);
       return await checkLocalPort(port);
     }
-    
+
     // For regular URLs, use HTTP/HTTPS request
     return new Promise((resolve) => {
       const protocol = parsedUrl.protocol === 'https:' ? require('https') : require('http');
 
       const options = {
         hostname: parsedUrl.hostname,
+        port: port, // Include the configured port so custom-port hosts probe correctly
         path: parsedUrl.pathname || '/',
         method: 'HEAD', // Use HEAD request for efficiency - we only care about connection, not content
         timeout: 5000
       };
 
-      console.log(`Testing connection to: ${parsedUrl.hostname}...`);
+      console.log(`Testing connection to: ${parsedUrl.hostname}:${port}...`);
 
       const request = protocol.request(options, (response) => {
         // Any response means we're online (even if it's a redirect or error code)
@@ -305,25 +439,23 @@ function monitorNetworkStatus(window, targetUrl) {
     try {
       const wasOnline = isCurrentlyOnline;
       const wasPortAvailable = isLocalPortAvailable;
-      
+
       // Get current connection status
       isCurrentlyOnline = await testConnection();
-      
+
       // Update port status only if it's a localhost URL
       if (isLocalhostUrl) {
         isLocalPortAvailable = isCurrentlyOnline;
         console.log(`Localhost port ${port} status check - Previous: ${wasPortAvailable ? 'available' : 'unavailable'}, Current: ${isLocalPortAvailable ? 'available' : 'unavailable'}`);
-        
+
         // Detect port becoming available
         if (isLocalPortAvailable && !wasPortAvailable) {
-          console.log(`Localhost port ${port} is now available! Scheduling page refresh...`);
-          
-          // Wait a moment for the service to fully initialize before refreshing
+          console.log(`Localhost port ${port} is now available! Scheduling recovery...`);
+
+          // Wait a moment for the service to fully initialize before recovering
           setTimeout(() => {
-            if (window && !window.isDestroyed()) {
-              console.log(`Executing page refresh after localhost port ${port} became available`);
-              window.webContents.reloadIgnoringCache();
-            }
+            console.log(`Executing recovery after localhost port ${port} became available`);
+            recoverToTarget();
           }, 2000);
         }
       } else {
@@ -332,14 +464,12 @@ function monitorNetworkStatus(window, targetUrl) {
 
         // Detect reconnection (went from offline to online)
         if (isCurrentlyOnline && !wasOnline) {
-          console.log('Network reconnected! Scheduling page refresh...');
+          console.log('Network reconnected! Scheduling recovery...');
 
-          // Wait a moment for the connection to stabilize before refreshing
+          // Wait a moment for the connection to stabilize before recovering
           setTimeout(() => {
-            if (window && !window.isDestroyed()) {
-              console.log('Executing page refresh after network reconnection');
-              window.webContents.reloadIgnoringCache();
-            }
+            console.log('Executing recovery after network reconnection');
+            recoverToTarget();
           }, 3000);
         }
       }
@@ -436,13 +566,15 @@ function loadSettings() {
   return {};
 }
 
-// Configure auto-start based on platform
+// Configure auto-start based on platform. Resolves the real executable path for
+// portable Windows builds (PORTABLE_EXECUTABLE_FILE) and AppImage Linux builds
+// (APPIMAGE), since app.getPath('exe') points at a transient extraction dir for both.
 function configureAutoStart(enable) {
-  const appPath = app.getPath('exe');
-  const appName = 'Jumpstart';
+  const appPath = process.env.APPIMAGE || process.env.PORTABLE_EXECUTABLE_FILE || app.getPath('exe');
+  const appName = APP_NAME;
 
   switch (process.platform) {
-    case 'win32':
+    case 'win32': {
       // Windows: Create shortcut in startup folder
       // This is useful for portable apps that don't use the installer
       const { execSync } = require('child_process');
@@ -450,19 +582,16 @@ function configureAutoStart(enable) {
       const shortcutPath = path.join(startupFolderPath, `${appName}.lnk`);
 
       if (enable) {
-        // Create Windows shortcut using PowerShell
+        // Always (re)create the shortcut so a stale target path self-heals.
         try {
-          // Check if file exists first to avoid error
-          if (!fs.existsSync(shortcutPath)) {
-             const powershellCommand = `
-            $WshShell = New-Object -ComObject WScript.Shell
-            $Shortcut = $WshShell.CreateShortcut("${shortcutPath.replace(/\\/g, '\\\\')}")
-            $Shortcut.TargetPath = "${appPath.replace(/\\/g, '\\\\')}"
-            $Shortcut.Save()
-          `;
-             execSync(`powershell -command "${powershellCommand}"`, { windowsHide: true });
-             console.log(`Created startup shortcut at: ${shortcutPath}`);
-          }
+          const powershellCommand = [
+            '$WshShell = New-Object -ComObject WScript.Shell;',
+            `$Shortcut = $WshShell.CreateShortcut('${shortcutPath.replace(/'/g, "''")}');`,
+            `$Shortcut.TargetPath = '${appPath.replace(/'/g, "''")}';`,
+            '$Shortcut.Save()'
+          ].join(' ');
+          execSync(`powershell -NoProfile -Command "${powershellCommand}"`, { windowsHide: true });
+          console.log(`Created startup shortcut at: ${shortcutPath}`);
         } catch (error) {
           console.error('Failed to create startup shortcut:', error);
         }
@@ -478,15 +607,17 @@ function configureAutoStart(enable) {
         }
       }
       break;
+    }
 
-    case 'darwin':
-      // macOS: Use Electron's API primarily, but custom plist can be a fallback if needed.
-      // Since app.setLoginItemSettings works well on macOS, we can skip custom plist 
-      // unless specifically required. The previous implementation forced it.
-      // We will leave it as is for now to ensure "full support" as requested.
-      const plistPath = path.join(os.homedir(), 'Library', 'LaunchAgents', `com.${appName}.plist`);
+    case 'darwin': {
+      // macOS: Use a LaunchAgent plist so disabling actually removes autostart.
+      const launchAgentsDir = path.join(os.homedir(), 'Library', 'LaunchAgents');
+      const plistPath = path.join(launchAgentsDir, `com.${appName}.plist`);
 
       if (enable) {
+        if (!fs.existsSync(launchAgentsDir)) {
+          fs.mkdirSync(launchAgentsDir, { recursive: true });
+        }
         const plistContent = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -502,16 +633,17 @@ function configureAutoStart(enable) {
 </dict>
 </plist>`;
         fs.writeFileSync(plistPath, plistContent);
-        exec(`launchctl load ${plistPath}`);
+        exec(`launchctl load "${plistPath}"`);
       } else {
         if (fs.existsSync(plistPath)) {
-          exec(`launchctl unload ${plistPath}`);
+          exec(`launchctl unload "${plistPath}"`);
           fs.unlinkSync(plistPath);
         }
       }
       break;
+    }
 
-    case 'linux':
+    case 'linux': {
       // Linux: Use .desktop file in autostart directory
       const autoStartDir = path.join(os.homedir(), '.config', 'autostart');
       const desktopPath = path.join(autoStartDir, `${appName}.desktop`);
@@ -520,10 +652,10 @@ function configureAutoStart(enable) {
         if (!fs.existsSync(autoStartDir)) {
           fs.mkdirSync(autoStartDir, { recursive: true });
         }
-
+        const escapedAppPath = appPath.replace(/"/g, '\\"');
         const desktopContent = `[Desktop Entry]
 Type=Application
-Exec=${appPath}
+Exec="${escapedAppPath}"
 Hidden=false
 NoDisplay=false
 X-GNOME-Autostart-enabled=true
@@ -535,56 +667,45 @@ Name=${appName}`;
         }
       }
       break;
+    }
   }
 }
 
 ipcMain.on('save-settings', (event, settings) => {
   console.log('Saving settings:', settings);
 
-  // Destructure settings
-  const { url, kiosk, fullscreen, startup, refreshMinutes, networkRefresh, preventSleep, hideCursor } = settings;
-
-  // Save settings to file
-  saveSettings(settings);
-
-  // Configure auto-start based on platform
-  try {
-    // Use Electron's built-in method for all platforms
-    // It handles Windows registry and macOS Login Items consistently
-    // Linux support varies by desktop environment but often works for basic cases
-    // If customized behavior is needed, platform-specific code can override this
-    app.setLoginItemSettings({
-      openAtLogin: startup,
-      path: app.getPath('exe'),
-      name: 'Jumpstart'
-    });
-
-    console.log(`Electron login item settings updated: openAtLogin=${startup}`);
-
-    // For Linux specifically, we might still want the custom .desktop file approach
-    // as setLoginItemSettings support on Linux is desktop-environment dependent
-    if (process.platform === 'linux' && app.isPackaged) {
-        configureAutoStart(startup);
-    }
-    
-    // If we are on Windows and using portable build, registry keys might not persist cleanly 
-    // or we might want a shortcut in the Startup folder instead. 
-    // The user asked to keep portable tag, implying portable usage.
-    // Portable apps often don't install registry keys well.
-    // Let's keep the custom shortcut creation for Windows as a fallback/enhancement 
-    // especially since we are supporting 'portable'.
-    if (process.platform === 'win32' && app.isPackaged) {
-       configureAutoStart(startup);
-    }
-
-  } catch (error) {
-    console.error('Failed to set startup settings:', error);
+  // Only the settings window may change settings/autostart. Remote page content uses
+  // a minimal preload without saveSettings, but gate on the sender as defense in depth.
+  if (!mainWindow || event.sender !== mainWindow.webContents) {
+    console.warn('Ignoring save-settings from unexpected sender');
+    return;
   }
 
+  // Validate and normalize the payload
+  if (!settings || typeof settings !== 'object') {
+    console.error('Invalid settings payload: expected an object');
+    return;
+  }
+
+  const rawUrl = typeof settings.url === 'string' ? settings.url.trim() : '';
+  if (!rawUrl) {
+    console.error('Invalid settings payload: URL is required');
+    return;
+  }
+
+  const kiosk = Boolean(settings.kiosk);
+  const fullscreen = !kiosk && Boolean(settings.fullscreen);
+  const startup = Boolean(settings.startup);
+  const preventSleep = Boolean(settings.preventSleep);
+  const hideCursor = Boolean(settings.hideCursor);
+  const refreshMinutesNumber = Number(settings.refreshMinutes);
+  const refreshMinutes = Number.isFinite(refreshMinutesNumber) ? Math.max(0, Math.floor(refreshMinutesNumber)) : 0;
+  const networkRefresh = Boolean(settings.networkRefresh);
+
   // Make sure URL has http:// or https:// prefix
-  let validUrl = url;
-  if (!url.startsWith('http://') && !url.startsWith('https://')) {
-    validUrl = 'https://' + url;
+  let validUrl = rawUrl;
+  if (!rawUrl.startsWith('http://') && !rawUrl.startsWith('https://')) {
+    validUrl = 'https://' + rawUrl;
   }
   // Basic validation: only allow http/https URLs
   try {
@@ -597,6 +718,39 @@ ipcMain.on('save-settings', (event, settings) => {
     return;
   }
 
+  const normalizedSettings = {
+    url: rawUrl,
+    kiosk,
+    fullscreen,
+    startup,
+    preventSleep,
+    hideCursor,
+    refreshMinutes,
+    networkRefresh
+  };
+
+  // Save settings to file
+  saveSettings(normalizedSettings);
+
+  // Configure auto-start based on platform
+  try {
+    // Electron's built-in method covers development runs and Windows/macOS login items.
+    app.setLoginItemSettings({
+      openAtLogin: startup,
+      path: process.env.PORTABLE_EXECUTABLE_FILE || app.getPath('exe'),
+      name: APP_NAME
+    });
+    console.log(`Electron login item settings updated: openAtLogin=${startup}`);
+
+    // For packaged builds, also manage a platform-native autostart entry (Startup
+    // shortcut / LaunchAgent / .desktop) so autostart works and can be fully disabled.
+    if (app.isPackaged) {
+      configureAutoStart(startup);
+    }
+  } catch (error) {
+    console.error('Failed to set startup settings:', error);
+  }
+
   if (mainWindow) {
     mainWindow.close();
   }
@@ -605,16 +759,7 @@ ipcMain.on('save-settings', (event, settings) => {
   createBrowserWindow(validUrl, kiosk, fullscreen, refreshMinutes, networkRefresh, preventSleep, hideCursor);
 
   // Log the configured settings for debugging
-  console.log('Browser configured with settings:', {
-    url: validUrl,
-    kiosk,
-    fullscreen,
-    startup,
-    refreshMinutes,
-    networkRefresh,
-    preventSleep,
-    hideCursor
-  });
+  console.log('Browser configured with settings:', normalizedSettings);
 });
 
 ipcMain.on('exit-kiosk', () => {
@@ -636,40 +781,16 @@ ipcMain.handle('get-failed-url', async (event) => {
 
 // Handle retry-url request from renderer (used in error.html)
 ipcMain.on('retry-url', (event) => {
-  if (!browserWindow || browserWindow.isDestroyed()) {
+  if (!browserWindow || browserWindow.isDestroyed() || !lastFailedUrl) {
     return;
   }
-  if (lastFailedUrl) {
-    console.log('Retrying connection to URL:', lastFailedUrl);
-    browserWindow.loadURL(lastFailedUrl).catch(err => {
-      console.error('Failed to load URL again:', err);
-      // No need to reload error.html as we're already there
-    });
-  }
-});
-
-// Permissions and stability hardening
-app.on('web-contents-created', (event, contents) => {
-  contents.session.setPermissionRequestHandler((webContents, permission, callback) => {
-    if (permission === 'media' || permission === 'camera' || permission === 'microphone') {
-      try {
-        const url = new URL(webContents.getURL());
-        const isHttps = url.protocol === 'https:';
-        const isLocal = url.hostname === 'localhost' || url.hostname === '127.0.0.1' || url.hostname === '::1';
-        callback(isHttps || isLocal);
-      } catch (_) {
-        callback(false);
-      }
-    } else {
-      callback(false);
-    }
-  });
-
-  contents.on('render-process-gone', (e, details) => {
-    console.error('Renderer process gone:', details);
-    if (contents === browserWindow?.webContents && !browserWindow.isDestroyed()) {
-      browserWindow.loadFile(path.join(__dirname, 'error.html'));
-    }
+  const urlToRetry = lastFailedUrl;
+  console.log('Retrying connection to URL:', urlToRetry);
+  browserWindow.loadURL(urlToRetry).then(() => {
+    lastFailedUrl = null;
+  }).catch(err => {
+    console.error('Failed to load URL again:', err);
+    // No need to reload error.html as we're already there
   });
 });
 
