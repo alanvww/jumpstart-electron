@@ -9,7 +9,7 @@
     "build:win": "electron-builder --win portable",
     "build:mac": "electron-builder --mac",
     "build:linux": "electron-builder --linux",
-    "build:pi": "electron-builder --linux --armv7l --arm64",
+    "build:pi": "electron-builder --linux --arm64",
     "build:all": "electron-builder -mwl"
   },
   "author": {
@@ -18,9 +18,12 @@
     "url": "https://alan.ooo"
   },
   "license": "MIT",
+  "engines": {
+    "node": ">=24.14.0 <25"
+  },
   "devDependencies": {
-    "electron": "^39.2.3",
-    "electron-builder": "^26.0.12"
+    "electron": "40.8.0",
+    "electron-builder": "26.8.1"
   },
   "build": {
     "appId": "com.electron.jumpstart",
@@ -30,6 +33,7 @@
     },
     "files": [
       "src/**/*",
+      "icons/**",
       "package.json"
     ],
     "mac": {
@@ -39,7 +43,7 @@
         "zip"
       ],
       "darkModeSupport": true,
-      "icon": "icons/icon.icns",
+      "icon": "icons/icon.png",
       "extendInfo": {
         "NSCameraUsageDescription": "Jumpstart needs access to the camera for sites that request it.",
         "NSMicrophoneUsageDescription": "Jumpstart needs access to the microphone for sites that request it."
@@ -58,24 +62,21 @@
           "target": "AppImage",
           "arch": [
             "x64",
-            "arm64",
-            "armv7l"
+            "arm64"
           ]
         },
         {
           "target": "deb",
           "arch": [
             "x64",
-            "arm64",
-            "armv7l"
+            "arm64"
           ]
         },
         {
           "target": "rpm",
           "arch": [
             "x64",
-            "arm64",
-            "armv7l"
+            "arm64"
           ]
         }
       ],

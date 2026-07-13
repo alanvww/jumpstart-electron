@@ -31,7 +31,7 @@ A simple cross-platform Electron wrapper lets you open any URL in a dedicated wi
   - Automatic page refresh on network reconnection
   - Timed auto-refresh based on user settings
 
-- **Cross-Platform Support**: Works on Windows, macOS, and Linux (including Raspberry Pi)
+- **Cross-Platform Support**: Works on Windows, macOS, and Linux, including 64-bit Raspberry Pi OS (arm64). 32-bit Raspberry Pi OS (armv7l) is not supported.
 
 ## Installation
 
@@ -107,22 +107,25 @@ The application can be built for Windows, macOS, and Linux using electron-builde
 Build for all platforms (requires appropriate environment):
 
 ```
-npm run build:all
+bun run build:all
 ```
 
 Build for specific platforms:
 
 ```
-npm run build:win   # Windows
-npm run build:mac   # macOS
-npm run build:linux # Linux
+bun run build:win   # Windows
+bun run build:mac   # macOS
+bun run build:linux # Linux (x64 + arm64)
+bun run build:pi    # 64-bit Raspberry Pi OS (arm64)
 ```
 
 Or just build for the current platform:
 
 ```
-npm run build
+bun run build
 ```
+
+> Note: `build:all` and `build:pi` are shown with `bun run`; you can also use `npm run` if you prefer.
 
 #### Build Outputs
 
@@ -138,10 +141,12 @@ The built applications will be available in the `dist` directory:
   - DMG disk image (.dmg)
   - ZIP archive (.zip)
 
-- **Linux**:
+- **Linux** (built per architecture — x64 and arm64):
   - AppImage (.AppImage)
   - Debian package (.deb)
   - RPM package (.rpm)
+
+  For a Raspberry Pi, use the **arm64** artifacts (`bun run build:pi`) on 64-bit Raspberry Pi OS.
 
 #### Customizing Builds
 
@@ -151,7 +156,7 @@ You can customize the build configuration in the `build` section of `package.jso
 
 If you want to contribute to Jumpstart or build it from source, follow these steps:
 
-1. Make sure you have [Node.js](https://nodejs.org/) installed (version 18 or higher recommended)
+1. Make sure you have [Bun](https://bun.sh/) installed, plus [Node.js](https://nodejs.org/) 24 LTS (the pinned version is in `.nvmrc`; run `nvm use` if you use nvm). Note that Bun and Node 24 do not provide 32-bit ARM (armv7l) binaries, so building from source requires a 64-bit OS.
 
 2. Clone this repository:
 
@@ -163,13 +168,13 @@ If you want to contribute to Jumpstart or build it from source, follow these ste
 3. Install dependencies:
 
    ```
-   npm install
+   bun install
    ```
 
 4. Start the application in development mode:
 
    ```
-   npm start
+   bun start
    ```
 
 5. Make your changes and test them
