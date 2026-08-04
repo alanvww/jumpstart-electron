@@ -412,9 +412,6 @@ function monitorNetworkStatus(window, targetUrl) {
 }
 
 app.whenReady().then(() => {
-  // Check for Linux camera permission issues on first run
-  setupLinuxCameraPermissions();
-
   // Check if we have saved settings with a URL
   const settings = loadSettings();
   console.log('Loaded settings:', settings);
