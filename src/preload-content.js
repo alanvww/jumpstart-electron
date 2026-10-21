@@ -1,23 +1,17 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
-// Minimal API attached to the window that loads remote/user-entered content (and the
-// bundled error.html). It deliberately OMITS saveSettings and loadSettings so a
-// compromised or malicious remote page cannot persist settings, hijack the kiosk URL,
-// or configure OS autostart. Only the local settings window uses the full preload.js.
-contextBridge.exposeInMainWorld('electronAPI', {
-  // Return to the settings window (used by error.html)
-  exitKiosk: () => ipcRenderer.send('exit-kiosk'),
+// Only expose the error-recovery IPC bridge to the local bundled error.html (file:).
+// Untrusted remote HTTP/HTTPS pages loaded in the browser window receive no electronAPI
+// surface, preventing remote pages from closing kiosk mode or querying main-process state.
+if (window.location.protocol === 'file:') {
+  contextBridge.exposeInMainWorld('electronAPI', {
+    // Return to the settings window (used by error.html)
+    exitKiosk: () => ipcRenderer.send('exit-kiosk'),
 
-  // Get the URL that failed to load (used by error.html)
-  getFailedUrl: () => ipcRenderer.invoke('get-failed-url'),
+    // Get the URL that failed to load (used by error.html)
+    getFailedUrl: () => ipcRenderer.invoke('get-failed-url'),
 
-  // Retry loading the failed URL (used by error.html)
-  retryUrl: () => ipcRenderer.send('retry-url'),
-
-  // Network status helpers (read-only, backed by the renderer's own navigator)
-  getNetworkStatus: () => navigator.onLine,
-  onNetworkStatusChange: (callback) => {
-    window.addEventListener('online', () => callback(true));
-    window.addEventListener('offline', () => callback(false));
-  }
-});
+    // Retry loading the failed URL (used by error.html)
+    retryUrl: () => ipcRenderer.send('retry-url')
+  });
+}

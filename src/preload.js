@@ -6,25 +6,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // Load settings from main process
   loadSettings: (callback) => {
+    if (typeof callback !== 'function') return;
+    ipcRenderer.once('settings-loaded', (_event, settings) => callback(settings));
     ipcRenderer.send('get-settings');
-    ipcRenderer.once('settings-loaded', (event, settings) => callback(settings));
-  },
-
-  // Exit kiosk mode
-  exitKiosk: () => ipcRenderer.send('exit-kiosk'),
-
-  // Network status methods
-  getNetworkStatus: () => navigator.onLine,
-
-  // Listen for online status changes
-  onNetworkStatusChange: (callback) => {
-    window.addEventListener('online', () => callback(true));
-    window.addEventListener('offline', () => callback(false));
-  },
-  
-  // Get the URL that failed to load (for error.html)
-  getFailedUrl: () => ipcRenderer.invoke('get-failed-url'),
-  
-  // Try loading the URL again
-  retryUrl: () => ipcRenderer.send('retry-url')
+  }
 });

@@ -6,10 +6,10 @@
   "scripts": {
     "start": "electron .",
     "build": "electron-builder",
-    "build:win": "electron-builder --win portable",
+    "build:win": "electron-builder --win",
     "build:mac": "electron-builder --mac",
-    "build:linux": "electron-builder --linux",
-    "build:pi": "electron-builder --linux --arm64",
+    "build:linux": "electron-builder --linux --x64 --arm64",
+    "build:pi": "electron-builder --linux deb AppImage --arm64",
     "build:all": "electron-builder -mwl"
   },
   "author": {
@@ -28,6 +28,7 @@
   "build": {
     "appId": "com.electron.jumpstart",
     "productName": "Jumpstart",
+    "afterSign": "scripts/after-sign.js",
     "directories": {
       "output": "dist"
     },
@@ -38,9 +39,24 @@
     ],
     "mac": {
       "category": "public.app-category.utilities",
+      "identity": "-",
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist",
       "target": [
-        "dmg",
-        "zip"
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        }
       ],
       "darkModeSupport": true,
       "icon": "icons/icon.png",
@@ -58,27 +74,9 @@
     },
     "linux": {
       "target": [
-        {
-          "target": "AppImage",
-          "arch": [
-            "x64",
-            "arm64"
-          ]
-        },
-        {
-          "target": "deb",
-          "arch": [
-            "x64",
-            "arm64"
-          ]
-        },
-        {
-          "target": "rpm",
-          "arch": [
-            "x64",
-            "arm64"
-          ]
-        }
+        "AppImage",
+        "deb",
+        "rpm"
       ],
       "category": "Utility",
       "icon": "icons/icon.png"

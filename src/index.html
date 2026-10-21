@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self';">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none';">
   <title>Customizable Browser - Settings</title>
   <link rel="stylesheet" href="style.css">
 </head>
@@ -74,7 +74,7 @@
       <div class="form-group">
         <p class="info-text">
           <strong>Note:</strong> Camera and microphone permissions are automatically granted to the site you configure above.
-          To exit kiosk mode, press Ctrl+Shift+Q.
+          To exit kiosk mode, press Ctrl+Shift+Q (or Cmd+Shift+Q on macOS).
         </p>
       </div>
       

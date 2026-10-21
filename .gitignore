@@ -5,7 +5,8 @@ yarn.lock
 
 # Build output
 dist/
-build/
+build/*
+!build/entitlements.mac.plist
 out/
 
 # Environment variables
