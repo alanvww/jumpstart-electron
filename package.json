@@ -1,6 +1,6 @@
 {
   "name": "jumpstart",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "description": "A cross-platform Electron wrapper for creative coding projects.",
   "main": "src/main.js",
   "scripts": {
