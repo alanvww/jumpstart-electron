@@ -1,12 +1,13 @@
 {
   "name": "jumpstart",
   "version": "0.0.3",
+  "desktopName": "jumpstart.desktop",
   "description": "A cross-platform Electron wrapper for creative coding projects.",
   "main": "src/main.js",
   "scripts": {
     "start": "electron .",
     "build": "electron-builder",
-    "build:win": "electron-builder --win",
+    "build:win": "electron-builder --win --x64",
     "build:mac": "electron-builder --mac",
     "build:linux": "electron-builder --linux --x64 --arm64",
     "build:pi": "electron-builder --linux deb AppImage --arm64",
@@ -80,6 +81,7 @@
         "rpm"
       ],
       "category": "Utility",
+      "syncDesktopName": true,
       "icon": "icons/icon.png"
     },
     "nsis": {
